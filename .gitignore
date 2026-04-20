@@ -1,4 +1,7 @@
 /target
+/build
+/configure
 *.parquet
 __pycache__/
 .python-version
+*.so
