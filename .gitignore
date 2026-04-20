@@ -1,0 +1,4 @@
+/target
+*.parquet
+__pycache__/
+.python-version

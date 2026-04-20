@@ -1,0 +1,15 @@
+[project]
+name = "duckdb-prs"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=1.5.2",
+    "polars>=1.40.0",
+    "polars-readstat",
+    "pyarrow>=23.0.1",
+]
+
+[tool.uv.sources]
+polars-readstat = { path = "../polars_readstat/target/wheels/polars_readstat-0.14.7-cp39-abi3-linux_x86_64.whl" }
