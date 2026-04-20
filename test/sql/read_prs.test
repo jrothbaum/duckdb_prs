@@ -2,48 +2,39 @@
 # description: test read_prs extension
 # group: [read_prs]
 
-# Before loading the extension, functions should not exist
+# Before loading the extension, function should not exist
 statement error
-SELECT * FROM read_sas7bdat('test/data/file1.sas7bdat');
-----
-Catalog Error
-
-statement error
-SELECT * FROM read_dta('test/data/stata7_117.dta');
-----
-Catalog Error
-
-statement error
-SELECT * FROM read_sav('test/data/simple_alltypes.sav');
+SELECT * FROM read_prs('test/data/file1.sas7bdat');
 ----
 Catalog Error
 
 require read_prs
 
-# SAS: row and column count
+# SAS: row count and first row
 query I
-SELECT count(*) FROM read_sas7bdat('test/data/file1.sas7bdat');
+SELECT count(*) FROM read_prs('test/data/file1.sas7bdat');
 ----
 40
 
-query I
-SELECT count(*) FROM information_schema.columns WHERE table_name = 'file1.sas7bdat';
-----
-0
-
 query II
-SELECT * FROM read_sas7bdat('test/data/file1.sas7bdat') LIMIT 1;
+SELECT * FROM read_prs('test/data/file1.sas7bdat') LIMIT 1;
 ----
 115.22	3.69
 
 # Stata: basic read
 query III
-SELECT * FROM read_dta('test/data/stata7_117.dta');
+SELECT * FROM read_prs('test/data/stata7_117.dta');
 ----
 1	a	1.0
 
 # SPSS: row count
 query I
-SELECT count(*) FROM read_sav('test/data/simple_alltypes.sav');
+SELECT count(*) FROM read_prs('test/data/simple_alltypes.sav');
 ----
 6
+
+# format override
+query I
+SELECT count(*) FROM read_prs('test/data/file1.sas7bdat', format='sas7bdat');
+----
+40

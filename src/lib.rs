@@ -56,12 +56,45 @@ fn get_bool_param(bind: &BindInfo, name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+// ── file format detection ─────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum FileFormat {
+    Sas,
+    Dta,
+    Sav,
+}
+
+fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat, Box<dyn std::error::Error>> {
+    if let Some(fmt) = override_fmt {
+        return match fmt.to_lowercase().as_str() {
+            "sas7bdat" | "sas" => Ok(FileFormat::Sas),
+            "dta" | "stata" => Ok(FileFormat::Dta),
+            "sav" | "zsav" | "spss" => Ok(FileFormat::Sav),
+            other => Err(format!("unknown format '{other}'; expected sas7bdat, dta, or sav").into()),
+        };
+    }
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "sas7bdat" => Ok(FileFormat::Sas),
+        "dta" => Ok(FileFormat::Dta),
+        "sav" | "zsav" => Ok(FileFormat::Sav),
+        other => Err(format!(
+            "cannot infer format from extension '.{other}'; use format='sas7bdat', 'dta', or 'sav'"
+        ).into()),
+    }
+}
+
 // ── shared VTab state ─────────────────────────────────────────────────────────
 
-#[repr(C)]
 struct FileBindData {
     path: String,
     missing_string_as_null: bool,
+    format: FileFormat,
 }
 
 unsafe impl Send for FileBindData {}
@@ -124,87 +157,56 @@ fn vtab_func<T: VTab<BindData = FileBindData, InitData = StreamInitData>>(
     Ok(())
 }
 
-// ── read_sas7bdat ─────────────────────────────────────────────────────────────
-
-struct ReadSasVTab;
-
-impl VTab for ReadSasVTab {
-    type BindData = FileBindData;
-    type InitData = StreamInitData;
-
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        let path = bind.get_parameter(0).to_string();
-        let missing_string_as_null = get_bool_param(bind, "missing_string_as_null", false);
-        let schema_ptr =
-            sas_arrow_output::read_to_arrow_schema_ffi(Path::new(&path), None, missing_string_as_null, None)?;
-        let fields = unsafe { schema_fields_from_ptr(schema_ptr) }?;
-        register_columns(bind, &fields)?;
-        Ok(FileBindData { path, missing_string_as_null })
-    }
-
-    fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
-        let bind = unsafe { &*(init.get_bind_data::<FileBindData>()) };
-        let stream_ptr = sas_arrow_output::read_to_arrow_stream_ffi(
-            Path::new(&bind.path),
-            None,
-            bind.missing_string_as_null,
-            None,
-        )?;
-        let reader = unsafe { stream_reader_from_ptr(stream_ptr) }?;
-        Ok(StreamInitData::new(reader))
-    }
-
-    fn func(
-        func: &TableFunctionInfo<Self>,
-        output: &mut DataChunkHandle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        vtab_func(func, output)
-    }
-
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
-    }
-
-    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![(
-            "missing_string_as_null".to_string(),
-            LogicalTypeHandle::from(LogicalTypeId::Boolean),
-        )])
-    }
+fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+    Some(vec![
+        ("format".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ("missing_string_as_null".to_string(), LogicalTypeHandle::from(LogicalTypeId::Boolean)),
+    ])
 }
 
-// ── read_dta ──────────────────────────────────────────────────────────────────
+// ── read_prs ──────────────────────────────────────────────────────────────────
 
-struct ReadDtaVTab;
+struct ReadPrsVTab;
 
-impl VTab for ReadDtaVTab {
+impl VTab for ReadPrsVTab {
     type BindData = FileBindData;
     type InitData = StreamInitData;
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
         let path = bind.get_parameter(0).to_string();
+        let fmt_override = bind.get_named_parameter("format").map(|v| v.to_string());
+        let format = detect_format(&path, fmt_override.as_deref())?;
         let missing_string_as_null = get_bool_param(bind, "missing_string_as_null", false);
-        let schema_ptr = stata_arrow_output::read_to_arrow_schema_ffi(
-            Path::new(&path),
-            None,
-            missing_string_as_null,
-            Some(false),
-            None,
-        )?;
+
+        let schema_ptr = match format {
+            FileFormat::Sas => sas_arrow_output::read_to_arrow_schema_ffi(
+                Path::new(&path), None, missing_string_as_null, None,
+            )?,
+            FileFormat::Dta => stata_arrow_output::read_to_arrow_schema_ffi(
+                Path::new(&path), None, missing_string_as_null, Some(false), None,
+            )?,
+            FileFormat::Sav => spss_arrow_output::read_to_arrow_schema_ffi(
+                Path::new(&path), None, missing_string_as_null, Some(false), None,
+            )?,
+        };
         let fields = unsafe { schema_fields_from_ptr(schema_ptr) }?;
         register_columns(bind, &fields)?;
-        Ok(FileBindData { path, missing_string_as_null })
+        Ok(FileBindData { path, missing_string_as_null, format })
     }
 
     fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
         let bind = unsafe { &*(init.get_bind_data::<FileBindData>()) };
-        let stream_ptr = stata_arrow_output::read_to_arrow_stream_ffi(
-            Path::new(&bind.path),
-            None,
-            bind.missing_string_as_null,
-            Some(false),
-            None,
-        )?;
+        let stream_ptr = match bind.format {
+            FileFormat::Sas => sas_arrow_output::read_to_arrow_stream_ffi(
+                Path::new(&bind.path), None, bind.missing_string_as_null, None,
+            )?,
+            FileFormat::Dta => stata_arrow_output::read_to_arrow_stream_ffi(
+                Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
+            )?,
+            FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi(
+                Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
+            )?,
+        };
         let reader = unsafe { stream_reader_from_ptr(stream_ptr) }?;
         Ok(StreamInitData::new(reader))
     }
@@ -221,65 +223,7 @@ impl VTab for ReadDtaVTab {
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![(
-            "missing_string_as_null".to_string(),
-            LogicalTypeHandle::from(LogicalTypeId::Boolean),
-        )])
-    }
-}
-
-// ── read_sav ──────────────────────────────────────────────────────────────────
-
-struct ReadSavVTab;
-
-impl VTab for ReadSavVTab {
-    type BindData = FileBindData;
-    type InitData = StreamInitData;
-
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        let path = bind.get_parameter(0).to_string();
-        let missing_string_as_null = get_bool_param(bind, "missing_string_as_null", false);
-        let schema_ptr = spss_arrow_output::read_to_arrow_schema_ffi(
-            Path::new(&path),
-            None,
-            missing_string_as_null,
-            Some(false),
-            None,
-        )?;
-        let fields = unsafe { schema_fields_from_ptr(schema_ptr) }?;
-        register_columns(bind, &fields)?;
-        Ok(FileBindData { path, missing_string_as_null })
-    }
-
-    fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
-        let bind = unsafe { &*(init.get_bind_data::<FileBindData>()) };
-        let stream_ptr = spss_arrow_output::read_to_arrow_stream_ffi(
-            Path::new(&bind.path),
-            None,
-            bind.missing_string_as_null,
-            Some(false),
-            None,
-        )?;
-        let reader = unsafe { stream_reader_from_ptr(stream_ptr) }?;
-        Ok(StreamInitData::new(reader))
-    }
-
-    fn func(
-        func: &TableFunctionInfo<Self>,
-        output: &mut DataChunkHandle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        vtab_func(func, output)
-    }
-
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
-    }
-
-    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![(
-            "missing_string_as_null".to_string(),
-            LogicalTypeHandle::from(LogicalTypeId::Boolean),
-        )])
+        named_parameters()
     }
 }
 
@@ -287,8 +231,6 @@ impl VTab for ReadSavVTab {
 
 #[duckdb_entrypoint_c_api(ext_name = "read_prs", min_duckdb_version = "v1.0.0")]
 pub fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn std::error::Error>> {
-    con.register_table_function::<ReadSasVTab>("read_sas7bdat")?;
-    con.register_table_function::<ReadDtaVTab>("read_dta")?;
-    con.register_table_function::<ReadSavVTab>("read_sav")?;
+    con.register_table_function::<ReadPrsVTab>("read_prs")?;
     Ok(())
 }

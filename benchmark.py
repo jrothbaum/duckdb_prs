@@ -28,9 +28,9 @@ FILES = [
 ]
 
 FORMAT_MAP = {
-    "sas7bdat": "read_sas7bdat",
-    "dta":      "read_dta",
-    "sav":      "read_sav",
+    "sas7bdat": "read_prs",
+    "dta":      "read_prs",
+    "sav":      "read_prs",
 }
 
 DEFAULT_EXT = Path(__file__).parent / "target" / "release" / "read_prs.duckdb_extension"

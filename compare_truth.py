@@ -27,10 +27,10 @@ STATA_DIR = READSTAT_RS_TESTS / "stata" / "data"
 SPSS_DIR  = READSTAT_RS_TESTS / "spss"  / "data"
 
 FORMAT_MAP = {
-    "sas7bdat": ("read_sas7bdat", SAS_DIR),
-    "dta":      ("read_dta",      STATA_DIR),
-    "sav":      ("read_sav",      SPSS_DIR),
-    "zsav":     ("read_sav",      SPSS_DIR),
+    "sas7bdat": ("read_prs", SAS_DIR),
+    "dta":      ("read_prs",      STATA_DIR),
+    "sav":      ("read_prs",      SPSS_DIR),
+    "zsav":     ("read_prs",      SPSS_DIR),
 }
 
 

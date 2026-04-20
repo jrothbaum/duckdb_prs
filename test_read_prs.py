@@ -3,7 +3,7 @@ Integration tests for the read_prs DuckDB extension.
 
 Reads every test file used by polars_readstat_rs via both:
   - polars_readstat (ground truth: row count, column names)
-  - DuckDB with the read_prs extension loaded (read_sas7bdat / read_dta / read_sav)
+  - DuckDB with the read_prs extension loaded (read_prs / read_prs / read_prs)
 
 and asserts they agree.
 
@@ -112,15 +112,15 @@ def test_format(ext_path: Path, duckdb_fn: str, files: list[Path], label: str) -
 
 
 def test_sas(ext_path):
-    return test_format(ext_path, "read_sas7bdat", collect(SAS_DIR, "sas7bdat"), "SAS")
+    return test_format(ext_path, "read_prs", collect(SAS_DIR, "sas7bdat"), "SAS")
 
 
 def test_stata(ext_path):
-    return test_format(ext_path, "read_dta", collect(STATA_DIR, "dta"), "Stata")
+    return test_format(ext_path, "read_prs", collect(STATA_DIR, "dta"), "Stata")
 
 
 def test_spss(ext_path):
-    return test_format(ext_path, "read_sav", collect(SPSS_DIR, "sav", "zsav"), "SPSS")
+    return test_format(ext_path, "read_prs", collect(SPSS_DIR, "sav", "zsav"), "SPSS")
 
 
 def main():
