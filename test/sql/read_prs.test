@@ -38,3 +38,15 @@ query I
 SELECT count(*) FROM read_prs('test/data/file1.sas7bdat', format='sas7bdat');
 ----
 40
+
+# SAS RLE compressed
+query I
+SELECT count(*) FROM read_prs('test/data/test2.sas7bdat');
+----
+10
+
+# SAS RDC compressed
+query I
+SELECT count(*) FROM read_prs('test/data/test3.sas7bdat');
+----
+10

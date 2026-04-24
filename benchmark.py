@@ -22,6 +22,7 @@ FILES = [
     TOO_BIG / "sas"   / "data" / "too_big" / "psam_p17.sas7bdat",
     TOO_BIG / "sas"   / "data" / "too_big" / "nls.sas7bdat",
     TOO_BIG / "sas"   / "data" / "too_big" / "numeric_1000000_2.sas7bdat",
+    TOO_BIG / "sas"   / "data" / "too_big" / "topical.sas7bdat",
     TOO_BIG / "stata" / "data" / "too_big" / "usa_00009.dta",
     TOO_BIG / "spss"  / "data" / "too_big" / "anes_timeseries_cdf_spss_20260205.sav",
     TOO_BIG / "spss"  / "data" / "too_big" / "GSS2024.sav",
