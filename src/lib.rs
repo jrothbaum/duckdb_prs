@@ -14,7 +14,14 @@ use duckdb::{
     },
 };
 use polars_readstat_rs::{sas_arrow_output, spss_arrow_output, stata_arrow_output};
-use std::{path::Path, sync::Mutex};
+use std::{
+    path::Path,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -56,6 +63,11 @@ fn get_bool_param(bind: &BindInfo, name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn get_u64_param(bind: &BindInfo, name: &str) -> Option<u64> {
+    bind.get_named_parameter(name)
+        .and_then(|v| v.to_string().parse::<u64>().ok())
+}
+
 // ── file format detection ─────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -89,12 +101,14 @@ fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat, B
     }
 }
 
-// ── shared VTab state ─────────────────────────────────────────────────────────
+// ── VTab state ────────────────────────────────────────────────────────────────
 
 struct FileBindData {
     path: String,
     missing_string_as_null: bool,
     format: FileFormat,
+    offset: u64,
+    limit: Option<u64>,
 }
 
 unsafe impl Send for FileBindData {}
@@ -102,65 +116,112 @@ unsafe impl Sync for FileBindData {}
 
 struct StreamInitData {
     reader: Mutex<Option<ArrowArrayStreamReader>>,
-    pending: Mutex<Option<(RecordBatch, usize)>>,
+    pending: Mutex<Option<RecordBatch>>,
+    projected: Vec<usize>,
+    read_ns: AtomicU64,
+    copy_ns: AtomicU64,
+    idle_ns: AtomicU64,
+    n_calls: AtomicU64,
+    last_end: Mutex<Option<Instant>>,
 }
 
 unsafe impl Send for StreamInitData {}
 unsafe impl Sync for StreamInitData {}
 
 impl StreamInitData {
-    fn new(reader: ArrowArrayStreamReader) -> Self {
+    fn new(reader: ArrowArrayStreamReader, projected: Vec<usize>) -> Self {
         Self {
             reader: Mutex::new(Some(reader)),
             pending: Mutex::new(None),
+            projected,
+            read_ns: AtomicU64::new(0),
+            copy_ns: AtomicU64::new(0),
+            idle_ns: AtomicU64::new(0),
+            n_calls: AtomicU64::new(0),
+            last_end: Mutex::new(None),
         }
     }
 }
 
-fn vtab_func<T: VTab<BindData = FileBindData, InitData = StreamInitData>>(
-    func: &TableFunctionInfo<T>,
+fn vtab_func<T: VTab>(
+    _func: &TableFunctionInfo<T>,
+    init: &StreamInitData,
     output: &mut DataChunkHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let init = func.get_init_data();
+    let call_start = Instant::now();
+
+    {
+        let mut last = init.last_end.lock().unwrap();
+        if let Some(t) = last.take() {
+            init.idle_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+    init.n_calls.fetch_add(1, Ordering::Relaxed);
+
     let max_rows = unsafe { duckdb::ffi::duckdb_vector_size() as usize };
 
-    // Drain any pending slice from a previous oversized batch.
     let mut pending = init.pending.lock().unwrap();
-    if let Some((batch, offset)) = pending.take() {
-        let remaining = batch.num_rows() - offset;
-        let take = remaining.min(max_rows);
-        let slice = batch.slice(offset, take);
-        if offset + take < batch.num_rows() {
-            *pending = Some((batch, offset + take));
+    if let Some(batch) = pending.take() {
+        let take = batch.num_rows().min(max_rows);
+        if batch.num_rows() > max_rows {
+            let rest = batch.slice(max_rows, batch.num_rows() - max_rows);
+            *pending = Some(rest);
         }
+        let slice = batch.slice(0, take);
+        drop(pending);
+        let t = Instant::now();
         record_batch_to_duckdb_data_chunk(&slice, output)?;
+        init.copy_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        *init.last_end.lock().unwrap() = Some(Instant::now());
         return Ok(());
     }
     drop(pending);
 
     let mut reader = init.reader.lock().unwrap();
-    match reader.as_mut().and_then(|r| r.next()) {
+    let t_read = Instant::now();
+    let next = reader.as_mut().and_then(|r| r.next());
+    init.read_ns.fetch_add(t_read.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+    match next {
         Some(Ok(batch)) => {
+            let batch = batch.project(&init.projected)?;
+            let t_copy = Instant::now();
             if batch.num_rows() <= max_rows {
                 record_batch_to_duckdb_data_chunk(&batch, output)?;
             } else {
+                let rest = batch.slice(max_rows, batch.num_rows() - max_rows);
+                *init.pending.lock().unwrap() = Some(rest);
                 let slice = batch.slice(0, max_rows);
-                *init.pending.lock().unwrap() = Some((batch, max_rows));
                 record_batch_to_duckdb_data_chunk(&slice, output)?;
             }
+            init.copy_ns.fetch_add(t_copy.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         None => {
+            let read_ms = init.read_ns.load(Ordering::Relaxed) / 1_000_000;
+            let copy_ms = init.copy_ns.load(Ordering::Relaxed) / 1_000_000;
+            let idle_ms = init.idle_ns.load(Ordering::Relaxed) / 1_000_000;
+            let calls   = init.n_calls.load(Ordering::Relaxed);
+            let total_ms = call_start.elapsed().as_millis() as u64 + read_ms + copy_ms + idle_ms;
+            eprintln!(
+                "[read_prs] calls={calls}  read={read_ms}ms  copy={copy_ms}ms  \
+                 idle(duckdb)={idle_ms}ms  (total tracked ≈{total_ms}ms)"
+            );
             output.set_len(0);
+            return Ok(());
         }
         Some(Err(e)) => return Err(e.into()),
     }
+
+    *init.last_end.lock().unwrap() = Some(Instant::now());
     Ok(())
 }
 
 fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
     Some(vec![
-        ("format".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ("format".to_string(),               LogicalTypeHandle::from(LogicalTypeId::Varchar)),
         ("missing_string_as_null".to_string(), LogicalTypeHandle::from(LogicalTypeId::Boolean)),
+        ("row_offset".to_string(),           LogicalTypeHandle::from(LogicalTypeId::UBigint)),
+        ("n_rows".to_string(),               LogicalTypeHandle::from(LogicalTypeId::UBigint)),
     ])
 }
 
@@ -191,32 +252,48 @@ impl VTab for ReadPrsVTab {
         };
         let fields = unsafe { schema_fields_from_ptr(schema_ptr) }?;
         register_columns(bind, &fields)?;
-        Ok(FileBindData { path, missing_string_as_null, format })
+
+        let offset = get_u64_param(bind, "row_offset").unwrap_or(0);
+        let limit  = get_u64_param(bind, "n_rows");
+        Ok(FileBindData { path, missing_string_as_null, format, offset, limit })
     }
 
     fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
         let bind = unsafe { &*(init.get_bind_data::<FileBindData>()) };
+        let projected: Vec<usize> = init.get_column_indices()
+            .into_iter()
+            .map(|i| i as usize)
+            .collect();
+
+        let offset = bind.offset as usize;
+        let n_rows = bind.limit.map(|l| l as usize);
+
         let stream_ptr = match bind.format {
             FileFormat::Sas => sas_arrow_output::read_to_arrow_stream_ffi(
                 Path::new(&bind.path), None, bind.missing_string_as_null, None,
+                offset, n_rows,
             )?,
             FileFormat::Dta => stata_arrow_output::read_to_arrow_stream_ffi(
                 Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
+                offset, n_rows,
             )?,
             FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi(
                 Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
+                offset, n_rows,
             )?,
         };
         let reader = unsafe { stream_reader_from_ptr(stream_ptr) }?;
-        Ok(StreamInitData::new(reader))
+        Ok(StreamInitData::new(reader, projected))
     }
 
     fn func(
         func: &TableFunctionInfo<Self>,
         output: &mut DataChunkHandle,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        vtab_func(func, output)
+        vtab_func(func, func.get_init_data(), output)
     }
+
+    fn supports_pushdown() -> bool { true }
 
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
         Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])

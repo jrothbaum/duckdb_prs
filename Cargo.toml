@@ -11,5 +11,5 @@ strip = "symbols"
 
 [dependencies]
 duckdb = { version = "1.10502", features = ["loadable-extension", "vtab-arrow"] }
-polars-readstat-rs = { path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs" }
+polars-readstat-rs = { path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs", features = ["row_reader"] }
 arrow = { version = "58", features = ["ffi"] }

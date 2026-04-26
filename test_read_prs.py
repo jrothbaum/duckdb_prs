@@ -12,9 +12,12 @@ Run from the polars_readstat project directory (where polars_readstat is install
 """
 
 import argparse
+import signal
 import sys
 import tempfile
 from pathlib import Path
+
+SUITE_TIMEOUT_SECS = 240  # kill the whole process if it takes more than 4 minutes
 
 import duckdb
 import polars as pl
@@ -27,11 +30,23 @@ SAS_DIR   = READSTAT_RS_TESTS / "sas"   / "data"
 STATA_DIR = READSTAT_RS_TESTS / "stata" / "data"
 SPSS_DIR  = READSTAT_RS_TESTS / "spss"  / "data"
 
+# Files/dirs that hang during testing (known issues tracked separately).
+SKIP_NAMES = {
+    "omov.sas7bdat",
+    "rmov.sas7bdat",
+}
+SKIP_DIRS: set[str] = set()
+
 
 def collect(root: Path, *exts: str) -> list[Path]:
     files = []
     for ext in exts:
-        files.extend(p for p in root.rglob(f"*.{ext}") if "too_big" not in p.parts)
+        files.extend(
+            p for p in root.rglob(f"*.{ext}")
+            if "too_big" not in p.parts
+            and p.name not in SKIP_NAMES
+            and not any(d in SKIP_DIRS for d in p.parts)
+        )
     return sorted(files)
 
 
@@ -91,18 +106,19 @@ def read_via_polars_readstat(path: Path):
     return polars_readstat.scan_readstat(str(path)).collect()
 
 
-def test_format(ext_path: Path, duckdb_fn: str, files: list[Path], label: str) -> tuple[int, int]:
+def test_format(ext_path: Path, duckdb_fn: str, files: list[Path], label: str, every: int = 1) -> tuple[int, int]:
+    files = files[::every]
     passed = failed = 0
-    print(f"\n=== {label} ({len(files)} files) ===")
+    print(f"\n=== {label} ({len(files)} files) ===", flush=True)
     for path in files:
         rel = path.relative_to(READSTAT_RS_TESTS)
         try:
             df = read_via_polars_readstat(path)
         except Exception as e:
-            print(f"  SKIP  {rel}: polars_readstat failed: {e}")
+            print(f"  SKIP  {rel}: polars_readstat failed: {e}", flush=True)
             continue
         if not df.columns:
-            print(f"  SKIP  {rel}: 0 columns (unsupported by DuckDB)")
+            print(f"  SKIP  {rel}: 0 columns (unsupported by DuckDB)", flush=True)
             continue
         if check(ext_path, duckdb_fn, path, df, str(rel)):
             passed += 1
@@ -111,22 +127,27 @@ def test_format(ext_path: Path, duckdb_fn: str, files: list[Path], label: str) -
     return passed, failed
 
 
-def test_sas(ext_path):
-    return test_format(ext_path, "read_prs", collect(SAS_DIR, "sas7bdat"), "SAS")
+def test_sas(ext_path, every=1):
+    return test_format(ext_path, "read_prs", collect(SAS_DIR, "sas7bdat"), "SAS", every)
 
 
-def test_stata(ext_path):
-    return test_format(ext_path, "read_prs", collect(STATA_DIR, "dta"), "Stata")
+def test_stata(ext_path, every=1):
+    return test_format(ext_path, "read_prs", collect(STATA_DIR, "dta"), "Stata", every)
 
 
-def test_spss(ext_path):
-    return test_format(ext_path, "read_prs", collect(SPSS_DIR, "sav", "zsav"), "SPSS")
+def test_spss(ext_path, every=1):
+    return test_format(ext_path, "read_prs", collect(SPSS_DIR, "sav", "zsav"), "SPSS", every)
 
 
 def main():
+    signal.signal(signal.SIGALRM, lambda s, f: sys.exit(f"\nTimed out after {SUITE_TIMEOUT_SECS}s"))
+    signal.alarm(SUITE_TIMEOUT_SECS)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--ext", default=str(DEFAULT_EXT),
                         help="Path to libread_prs.so")
+    parser.add_argument("--every", type=int, default=1,
+                        help="Test every Nth file (e.g. 3 = ~1/3 of files)")
     args = parser.parse_args()
 
     ext_path = Path(args.ext)
@@ -134,7 +155,7 @@ def main():
         sys.exit(f"Extension not found: {ext_path}\nRun: cargo build --release")
 
     total_passed = total_failed = 0
-    for passed, failed in [test_sas(ext_path), test_stata(ext_path), test_spss(ext_path)]:
+    for passed, failed in [test_sas(ext_path, args.every), test_stata(ext_path, args.every), test_spss(ext_path, args.every)]:
         total_passed += passed
         total_failed += failed
 

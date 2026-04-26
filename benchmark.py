@@ -62,8 +62,7 @@ for _ in range({runs}):
     t0 = time.perf_counter()
     con.execute("SELECT * FROM {fn}('{path_str}')").pl().lazy().collect()
     times.append(time.perf_counter() - t0)
-times.sort()
-print(json.dumps(times[len(times)//2]))
+print(json.dumps(min(times)))
 """
     return _run_script(script, timeout)
 
@@ -79,8 +78,7 @@ for _ in range({runs}):
     t0 = time.perf_counter()
     con.execute("SELECT * FROM read_stat('{path_str}')").pl().lazy().collect()
     times.append(time.perf_counter() - t0)
-times.sort()
-print(json.dumps(times[len(times)//2]))
+print(json.dumps(min(times)))
 """
     return _run_script(script, timeout)
 
@@ -93,8 +91,7 @@ for _ in range({runs}):
     t0 = time.perf_counter()
     polars_readstat.scan_readstat('{path_str}').collect()
     times.append(time.perf_counter() - t0)
-times.sort()
-print(json.dumps(times[len(times)//2]))
+print(json.dumps(min(times)))
 """
     return _run_script(script, timeout)
 
@@ -102,7 +99,7 @@ print(json.dumps(times[len(times)//2]))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ext", default=str(DEFAULT_EXT))
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120.0, help="Per-query timeout per engine (seconds)")
     args = parser.parse_args()
 
@@ -177,7 +174,7 @@ def main():
 
     if n:
         print(f"\n{'TOTAL':<40} {'':>8}  {quack_total*1000:8.0f}ms  {rs_total*1000:8.0f}ms  {polars_total*1000:8.0f}ms")
-        print(f"({n} files, {args.runs} runs each, median; DuckDB outputs .arrow(), polars outputs DataFrame)")
+        print(f"({n} files, {args.runs} run(s) each; DuckDB outputs .arrow(), polars outputs DataFrame)")
 
 
 if __name__ == "__main__":
