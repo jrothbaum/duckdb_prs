@@ -60,7 +60,7 @@ con.execute("LOAD '{ext_path}'")
 times = []
 for _ in range({runs}):
     t0 = time.perf_counter()
-    con.execute("SELECT * FROM {fn}('{path_str}')").pl().lazy().collect()
+    con.sql("SELECT * FROM {fn}('{path_str}')").pl().lazy().collect()
     times.append(time.perf_counter() - t0)
 print(json.dumps(min(times)))
 """
@@ -76,7 +76,7 @@ con.execute("LOAD read_stat")
 times = []
 for _ in range({runs}):
     t0 = time.perf_counter()
-    con.execute("SELECT * FROM read_stat('{path_str}')").pl().lazy().collect()
+    con.sql("SELECT * FROM read_stat('{path_str}')").pl().lazy().collect()
     times.append(time.perf_counter() - t0)
 print(json.dumps(min(times)))
 """
@@ -141,6 +141,7 @@ def main():
             t_q = None
             q_str = f"{'TIMEOUT':>8}"
         except Exception as e:
+            print(f"[q error: {e}]", file=sys.stderr)
             t_q = None
             q_str = f"{'ERR':>8}"
         print(f"{q_str:>10}", end="  ", flush=True)
@@ -152,6 +153,7 @@ def main():
             t_r = None
             r_str = f"{'TIMEOUT':>8}"
         except Exception as e:
+            print(f"[r error: {e}]", file=sys.stderr)
             t_r = None
             r_str = f"{'ERR':>8}"
         print(f"{r_str:>10}", end="  ", flush=True)
@@ -163,6 +165,7 @@ def main():
             t_p = None
             p_str = f"{'TIMEOUT':>8}"
         except Exception as e:
+            print(f"[p error: {e}]", file=sys.stderr)
             t_p = None
             p_str = f"{'ERR':>8}"
         print(f"{p_str:>10}")
@@ -174,7 +177,7 @@ def main():
 
     if n:
         print(f"\n{'TOTAL':<40} {'':>8}  {quack_total*1000:8.0f}ms  {rs_total*1000:8.0f}ms  {polars_total*1000:8.0f}ms")
-        print(f"({n} files, {args.runs} run(s) each; DuckDB outputs .arrow(), polars outputs DataFrame)")
+        print(f"({n} files, {args.runs} run(s) each; DuckDB outputs .pl(), polars outputs DataFrame)")
 
 
 if __name__ == "__main__":

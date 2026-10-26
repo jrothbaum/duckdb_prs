@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 strip = "symbols"
 
 [dependencies]
-duckdb = { version = "1.10502", features = ["loadable-extension", "vtab-arrow"] }
-polars-readstat-rs = { path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs", features = ["row_reader"] }
-arrow = { version = "58", features = ["ffi"] }
+duckdb-neo = { version = "0.20000", default-features = false, features = ["build-extension"] }
+duckdb-loadable-macros = { version = "1.20000", features = ["neo"] }
+polars-readstat-rs = { path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs" }
+arrow = { version = "60", features = ["ffi"] }

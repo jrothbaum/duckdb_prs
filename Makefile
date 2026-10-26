@@ -4,10 +4,10 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 EXTENSION_NAME=read_prs
 
-# Required: duckdb-rs relies on unstable C API functionality
+# Required: duckdb-neo (DuckDB's v2 C API) is an unstable C API
 USE_UNSTABLE_C_API=1
 
-TARGET_DUCKDB_VERSION=v1.5.2
+TARGET_DUCKDB_VERSION=v2.0.0
 
 all: configure debug
 

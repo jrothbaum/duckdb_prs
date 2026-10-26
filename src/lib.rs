@@ -1,71 +1,56 @@
+mod duckdb_file_source;
+
 use arrow::{
-    array::RecordBatch,
+    array::{Array, RecordBatch, StructArray},
     datatypes::DataType,
-    ffi::FFI_ArrowSchema,
+    ffi::{FFI_ArrowSchema, to_ffi},
     ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream},
 };
-use duckdb::{
-    Connection, Result,
-    core::{DataChunkHandle, LogicalTypeHandle, LogicalTypeId},
-    duckdb_entrypoint_c_api,
-    vtab::{
-        BindInfo, InitInfo, TableFunctionInfo, VTab,
-        arrow::{record_batch_to_duckdb_data_chunk, to_duckdb_logical_type},
+use duckdb_file_source::DuckDbFileSource;
+use duckdb_loadable_macros::duckdb_entrypoint_c_api_v2;
+use duckdb_neo::{
+    Error, Result,
+    arrow::{ArrowArray, ArrowImporter, ArrowSchema},
+    bind_arguments::BindArgument,
+    connection::Context,
+    data_chunk::DataChunkRef,
+    extension::Extension,
+    signature::{FunctionParameter, FunctionParameterKind, SignatureBuilder},
+    table_function::{
+        BindFunctionHandle, OrderPreservation, ExecColumnInfo, InitColumnData, PartitionData, TableFunctionBuilder,
+        TableFunctionCallbacks, TablePartitioningCallbacks,
     },
+    vector::Unknown,
 };
-use polars_readstat_rs::{sas_arrow_output, spss_arrow_output, stata_arrow_output};
-use std::{
-    path::Path,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
+use polars_readstat_rs::{ReadSource, sas_arrow_output, spss_arrow_output, stata_arrow_output};
+use std::{path::Path, sync::{Arc, Mutex}};
+
+
+/// DuckDB's standard vector size; no chunk handed to DuckDB may exceed it.
+const VECTOR_SIZE: usize = 2048;
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-unsafe fn schema_fields_from_ptr<T>(
-    ptr: *mut T,
-) -> Result<Vec<arrow::datatypes::FieldRef>, Box<dyn std::error::Error>> {
+fn err<E: std::fmt::Display>(e: E) -> Error {
+    Error::invalid_input(e.to_string())
+}
+
+/// Takes ownership of the schema polars-readstat allocated, returning the
+/// column count and the same schema as a DuckDB-importable Arrow schema.
+unsafe fn take_schema<T>(ptr: *mut T) -> Result<(usize, ArrowSchema)> {
     let ffi: FFI_ArrowSchema = unsafe { *Box::from_raw(ptr as *mut FFI_ArrowSchema) };
-    let field = arrow::datatypes::Field::try_from(&ffi)?;
-    match field.data_type() {
-        DataType::Struct(fields) => Ok(fields.iter().cloned().collect()),
-        other => Err(format!("expected Struct, got {other}").into()),
-    }
+    let field = arrow::datatypes::Field::try_from(&ffi).map_err(err)?;
+    let n = match field.data_type() {
+        DataType::Struct(fields) => fields.len(),
+        other => return Err(err(format!("expected Struct, got {other}"))),
+    };
+    // Same C Data Interface layout; ownership (and the release callback) moves.
+    Ok((n, unsafe { ArrowSchema::from_raw(std::mem::transmute(ffi)) }))
 }
 
-fn register_columns(
-    bind: &BindInfo,
-    fields: &[arrow::datatypes::FieldRef],
-) -> Result<(), Box<dyn std::error::Error>> {
-    if fields.is_empty() {
-        return Err("file has no columns".into());
-    }
-    for f in fields {
-        let logical_type = to_duckdb_logical_type(f.data_type())?;
-        bind.add_result_column(f.name(), logical_type);
-    }
-    Ok(())
-}
-
-unsafe fn stream_reader_from_ptr<T>(
-    ptr: *mut T,
-) -> Result<ArrowArrayStreamReader, Box<dyn std::error::Error>> {
+unsafe fn stream_reader_from_ptr<T>(ptr: *mut T) -> Result<ArrowArrayStreamReader> {
     let ffi = unsafe { FFI_ArrowArrayStream::from_raw(ptr as *mut FFI_ArrowArrayStream) };
-    Ok(ArrowArrayStreamReader::try_new(ffi)?)
-}
-
-fn get_bool_param(bind: &BindInfo, name: &str, default: bool) -> bool {
-    bind.get_named_parameter(name)
-        .map(|v| v.to_string() == "true")
-        .unwrap_or(default)
-}
-
-fn get_u64_param(bind: &BindInfo, name: &str) -> Option<u64> {
-    bind.get_named_parameter(name)
-        .and_then(|v| v.to_string().parse::<u64>().ok())
+    ArrowArrayStreamReader::try_new(ffi).map_err(err)
 }
 
 // ── file format detection ─────────────────────────────────────────────────────
@@ -77,13 +62,13 @@ enum FileFormat {
     Sav,
 }
 
-fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat, Box<dyn std::error::Error>> {
+fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat> {
     if let Some(fmt) = override_fmt {
         return match fmt.to_lowercase().as_str() {
             "sas7bdat" | "sas" => Ok(FileFormat::Sas),
             "dta" | "stata" => Ok(FileFormat::Dta),
             "sav" | "zsav" | "spss" => Ok(FileFormat::Sav),
-            other => Err(format!("unknown format '{other}'; expected sas7bdat, dta, or sav").into()),
+            other => Err(err(format!("unknown format '{other}'; expected sas7bdat, dta, or sav"))),
         };
     }
     let ext = Path::new(path)
@@ -95,219 +80,278 @@ fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat, B
         "sas7bdat" => Ok(FileFormat::Sas),
         "dta" => Ok(FileFormat::Dta),
         "sav" | "zsav" => Ok(FileFormat::Sav),
-        other => Err(format!(
+        other => Err(err(format!(
             "cannot infer format from extension '.{other}'; use format='sas7bdat', 'dta', or 'sav'"
-        ).into()),
+        ))),
     }
 }
 
-// ── VTab state ────────────────────────────────────────────────────────────────
+// ── scan state ────────────────────────────────────────────────────────────────
 
 struct FileBindData {
-    path: String,
+    source: Arc<dyn ReadSource>,
     missing_string_as_null: bool,
     format: FileFormat,
     offset: u64,
     limit: Option<u64>,
+    preserve_order: bool,
+    row_index_name: Option<String>,
+    threads: Option<usize>,
+    batch_size: Option<usize>,
+    value_labels_as_strings: bool,
 }
 
-unsafe impl Send for FileBindData {}
-unsafe impl Sync for FileBindData {}
+struct StreamState {
+    reader: Option<ArrowArrayStreamReader>,
+    pending: Option<RecordBatch>,
+    /// Sequence number of the next slice handed out; DuckDB uses it to put
+    /// slices produced by different workers back in file order.
+    next_index: usize,
+}
 
-struct StreamInitData {
-    reader: Mutex<Option<ArrowArrayStreamReader>>,
-    pending: Mutex<Option<RecordBatch>>,
+/// Per-worker state: the sequence number of the slice `exec` last produced.
+#[derive(Default)]
+struct WorkerState {
+    batch_index: usize,
+}
+
+struct ScanState {
+    stream: Mutex<StreamState>,
+    /// Bind-declared column index of each projected output column.
     projected: Vec<usize>,
-    read_ns: AtomicU64,
-    copy_ns: AtomicU64,
-    idle_ns: AtomicU64,
-    n_calls: AtomicU64,
-    last_end: Mutex<Option<Instant>>,
 }
 
-unsafe impl Send for StreamInitData {}
-unsafe impl Sync for StreamInitData {}
-
-impl StreamInitData {
-    fn new(reader: ArrowArrayStreamReader, projected: Vec<usize>) -> Self {
-        Self {
-            reader: Mutex::new(Some(reader)),
-            pending: Mutex::new(None),
-            projected,
-            read_ns: AtomicU64::new(0),
-            copy_ns: AtomicU64::new(0),
-            idle_ns: AtomicU64::new(0),
-            n_calls: AtomicU64::new(0),
-            last_end: Mutex::new(None),
+impl ScanState {
+    /// Returns the next batch of at most `VECTOR_SIZE` rows, projected, or
+    /// `None` once the stream is exhausted.
+    fn next_slice(&self) -> Result<Option<(usize, RecordBatch)>> {
+        let mut st = self.stream.lock().map_err(|_| err("scan state poisoned"))?;
+        let batch = match st.pending.take() {
+            Some(b) => b,
+            None => match st.reader.as_mut().and_then(|r| r.next()) {
+                Some(Ok(b)) => b.project(&self.projected).map_err(err)?,
+                Some(Err(e)) => return Err(err(e)),
+                None => return Ok(None),
+            },
+        };
+        let index = st.next_index;
+        st.next_index += 1;
+        if batch.num_rows() > VECTOR_SIZE {
+            st.pending = Some(batch.slice(VECTOR_SIZE, batch.num_rows() - VECTOR_SIZE));
+            Ok(Some((index, batch.slice(0, VECTOR_SIZE))))
+        } else {
+            Ok(Some((index, batch)))
         }
     }
-}
-
-fn vtab_func<T: VTab>(
-    _func: &TableFunctionInfo<T>,
-    init: &StreamInitData,
-    output: &mut DataChunkHandle,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let call_start = Instant::now();
-
-    {
-        let mut last = init.last_end.lock().unwrap();
-        if let Some(t) = last.take() {
-            init.idle_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        }
-    }
-    init.n_calls.fetch_add(1, Ordering::Relaxed);
-
-    let max_rows = unsafe { duckdb::ffi::duckdb_vector_size() as usize };
-
-    let mut pending = init.pending.lock().unwrap();
-    if let Some(batch) = pending.take() {
-        let take = batch.num_rows().min(max_rows);
-        if batch.num_rows() > max_rows {
-            let rest = batch.slice(max_rows, batch.num_rows() - max_rows);
-            *pending = Some(rest);
-        }
-        let slice = batch.slice(0, take);
-        drop(pending);
-        let t = Instant::now();
-        record_batch_to_duckdb_data_chunk(&slice, output)?;
-        init.copy_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        *init.last_end.lock().unwrap() = Some(Instant::now());
-        return Ok(());
-    }
-    drop(pending);
-
-    let mut reader = init.reader.lock().unwrap();
-    let t_read = Instant::now();
-    let next = reader.as_mut().and_then(|r| r.next());
-    init.read_ns.fetch_add(t_read.elapsed().as_nanos() as u64, Ordering::Relaxed);
-
-    match next {
-        Some(Ok(batch)) => {
-            let batch = batch.project(&init.projected)?;
-            let t_copy = Instant::now();
-            if batch.num_rows() <= max_rows {
-                record_batch_to_duckdb_data_chunk(&batch, output)?;
-            } else {
-                let rest = batch.slice(max_rows, batch.num_rows() - max_rows);
-                *init.pending.lock().unwrap() = Some(rest);
-                let slice = batch.slice(0, max_rows);
-                record_batch_to_duckdb_data_chunk(&slice, output)?;
-            }
-            init.copy_ns.fetch_add(t_copy.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        }
-        None => {
-            let read_ms = init.read_ns.load(Ordering::Relaxed) / 1_000_000;
-            let copy_ms = init.copy_ns.load(Ordering::Relaxed) / 1_000_000;
-            let idle_ms = init.idle_ns.load(Ordering::Relaxed) / 1_000_000;
-            let calls   = init.n_calls.load(Ordering::Relaxed);
-            let total_ms = call_start.elapsed().as_millis() as u64 + read_ms + copy_ms + idle_ms;
-            eprintln!(
-                "[read_prs] calls={calls}  read={read_ms}ms  copy={copy_ms}ms  \
-                 idle(duckdb)={idle_ms}ms  (total tracked ≈{total_ms}ms)"
-            );
-            output.set_len(0);
-            return Ok(());
-        }
-        Some(Err(e)) => return Err(e.into()),
-    }
-
-    *init.last_end.lock().unwrap() = Some(Instant::now());
-    Ok(())
-}
-
-fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-    Some(vec![
-        ("format".to_string(),               LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-        ("missing_string_as_null".to_string(), LogicalTypeHandle::from(LogicalTypeId::Boolean)),
-        ("row_offset".to_string(),           LogicalTypeHandle::from(LogicalTypeId::UBigint)),
-        ("n_rows".to_string(),               LogicalTypeHandle::from(LogicalTypeId::UBigint)),
-    ])
 }
 
 // ── read_prs ──────────────────────────────────────────────────────────────────
 
-struct ReadPrsVTab;
+struct ReadPrs;
 
-impl VTab for ReadPrsVTab {
+/// Positions of the declared parameters in `bind`'s argument list.
+const ARG_PATH: usize = 0;
+const ARG_FORMAT: usize = 1;
+const ARG_MISSING_STRING_AS_NULL: usize = 2;
+const ARG_ROW_OFFSET: usize = 3;
+const ARG_N_ROWS: usize = 4;
+const ARG_PRESERVE_ORDER: usize = 5;
+const ARG_ROW_INDEX_NAME: usize = 6;
+const ARG_THREADS: usize = 7;
+const ARG_BATCH_SIZE: usize = 8;
+const ARG_VALUE_LABELS_AS_STRINGS: usize = 9;
+
+/// DuckDB's own `threads` setting for this session, used when the caller does
+/// not pass `threads` explicitly.
+fn duckdb_threads(context: &Context) -> Option<usize> {
+    let (value, _scope) = context.config().ok()?.get_value("threads").ok()?;
+    value.get::<i64>().ok().flatten().filter(|n| *n > 0).map(|n| n as usize)
+}
+
+fn arg<T: duckdb_neo::FromValue>(args: &[BindArgument], index: usize) -> Option<T> {
+    args.get(index)?.value.as_ref()?.get::<T>().ok().flatten()
+}
+
+impl TableFunctionCallbacks for ReadPrs {
     type BindData = FileBindData;
-    type InitData = StreamInitData;
+    type LocalState = WorkerState;
+    type GlobalState = ScanState;
 
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        let path = bind.get_parameter(0).to_string();
-        let fmt_override = bind.get_named_parameter("format").map(|v| v.to_string());
+    fn bind(
+        &self,
+        context: &Context,
+        arguments: Vec<BindArgument>,
+        bind_handle: BindFunctionHandle<'_>,
+    ) -> Result<Self::BindData> {
+        let path: String = arg(&arguments, ARG_PATH).ok_or_else(|| err("read_prs requires a path"))?;
+        let fmt_override: Option<String> = arg(&arguments, ARG_FORMAT);
         let format = detect_format(&path, fmt_override.as_deref())?;
-        let missing_string_as_null = get_bool_param(bind, "missing_string_as_null", false);
+        let missing_string_as_null = arg::<bool>(&arguments, ARG_MISSING_STRING_AS_NULL).unwrap_or(false);
+        let offset = arg::<u64>(&arguments, ARG_ROW_OFFSET).unwrap_or(0);
+        let limit = arg::<u64>(&arguments, ARG_N_ROWS);
+        let preserve_order = arg::<bool>(&arguments, ARG_PRESERVE_ORDER).unwrap_or(false);
+        let row_index_name: Option<String> = arg(&arguments, ARG_ROW_INDEX_NAME);
+        let row_index = row_index_name.as_deref();
+        let threads = arg::<u64>(&arguments, ARG_THREADS)
+            .map(|n| n as usize)
+            .or_else(|| duckdb_threads(context));
+        let batch_size = arg::<u64>(&arguments, ARG_BATCH_SIZE).map(|n| n as usize);
+        let value_labels_as_strings = arg::<bool>(&arguments, ARG_VALUE_LABELS_AS_STRINGS).unwrap_or(false);
+
+        let source: Arc<dyn ReadSource> = Arc::new(DuckDbFileSource::open(context, &path).map_err(err)?);
 
         let schema_ptr = match format {
-            FileFormat::Sas => sas_arrow_output::read_to_arrow_schema_ffi(
-                Path::new(&path), None, missing_string_as_null, None,
-            )?,
-            FileFormat::Dta => stata_arrow_output::read_to_arrow_schema_ffi(
-                Path::new(&path), None, missing_string_as_null, Some(false), None,
-            )?,
-            FileFormat::Sav => spss_arrow_output::read_to_arrow_schema_ffi(
-                Path::new(&path), None, missing_string_as_null, Some(false), None,
-            )?,
-        };
-        let fields = unsafe { schema_fields_from_ptr(schema_ptr) }?;
-        register_columns(bind, &fields)?;
+            FileFormat::Sas => sas_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), row_index),
+            FileFormat::Dta => stata_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), Some(value_labels_as_strings), row_index),
+            FileFormat::Sav => spss_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), Some(value_labels_as_strings), row_index),
+        }
+        .map_err(err)?;
+        let (n_columns, schema) = unsafe { take_schema(schema_ptr) }?;
+        if n_columns == 0 {
+            return Err(err("file has no columns"));
+        }
 
-        let offset = get_u64_param(bind, "row_offset").unwrap_or(0);
-        let limit  = get_u64_param(bind, "n_rows");
-        Ok(FileBindData { path, missing_string_as_null, format, offset, limit })
+        // DuckDB resolves the Arrow types itself, so the column types always
+        // match what the importer produces at scan time.
+        // Like polars_readstat: unordered batches by default (streaming, parallel);
+        // `preserve_order` buffers in the decoder and has DuckDB keep file order.
+        bind_handle.set_order(if preserve_order { OrderPreservation::Insertion } else { OrderPreservation::None })?;
+        let importer = ArrowImporter::new(context, schema, None)?;
+        for (name, logical_type) in importer.schema()?.get_all()? {
+            bind_handle.add_result_column(&name, &logical_type)?;
+        }
+
+        Ok(FileBindData {
+            source, missing_string_as_null, format, offset, limit, preserve_order, row_index_name,
+            threads, batch_size, value_labels_as_strings,
+        })
     }
 
-    fn init(init: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
-        let bind = unsafe { &*(init.get_bind_data::<FileBindData>()) };
-        let projected: Vec<usize> = init.get_column_indices()
-            .into_iter()
-            .map(|i| i as usize)
-            .collect();
+    fn init_global_state(
+        &self,
+        bind: &Self::BindData,
+        _context: &Context,
+        column_data: InitColumnData<'_>,
+    ) -> Result<(Option<Self::GlobalState>, Option<usize>)> {
+        let projected = (0..column_data.count()?)
+            .map(|i| column_data.get_column_index(i))
+            .collect::<Result<Vec<_>>>()?;
 
         let offset = bind.offset as usize;
         let n_rows = bind.limit.map(|l| l as usize);
-
         let stream_ptr = match bind.format {
-            FileFormat::Sas => sas_arrow_output::read_to_arrow_stream_ffi(
-                Path::new(&bind.path), None, bind.missing_string_as_null, None,
-                offset, n_rows,
-            )?,
-            FileFormat::Dta => stata_arrow_output::read_to_arrow_stream_ffi(
-                Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
-                offset, n_rows,
-            )?,
-            FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi(
-                Path::new(&bind.path), None, bind.missing_string_as_null, Some(false), None,
-                offset, n_rows,
-            )?,
-        };
+            FileFormat::Sas => sas_arrow_output::read_to_arrow_stream_ffi_from_source(
+                bind.source.clone(), bind.threads, bind.missing_string_as_null, bind.batch_size, offset, n_rows,
+                bind.preserve_order, bind.row_index_name.clone(),
+            ),
+            FileFormat::Dta => stata_arrow_output::read_to_arrow_stream_ffi_from_source(
+                bind.source.clone(), bind.threads, bind.missing_string_as_null, Some(bind.value_labels_as_strings), bind.batch_size, offset, n_rows,
+                bind.preserve_order, bind.row_index_name.clone(),
+            ),
+            FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi_from_source(
+                bind.source.clone(), bind.threads, bind.missing_string_as_null, Some(bind.value_labels_as_strings), bind.batch_size, offset, n_rows,
+                bind.preserve_order, bind.row_index_name.clone(),
+            ),
+        }
+        .map_err(err)?;
         let reader = unsafe { stream_reader_from_ptr(stream_ptr) }?;
-        Ok(StreamInitData::new(reader, projected))
+
+        let state = ScanState {
+            stream: Mutex::new(StreamState { reader: Some(reader), pending: None, next_index: 0 }),
+            projected,
+        };
+        // One worker: the decoder already parallelises internally.
+        Ok((Some(state), Some(std::thread::available_parallelism().map_or(1, |n| n.get()))))
     }
 
-    fn func(
-        func: &TableFunctionInfo<Self>,
-        output: &mut DataChunkHandle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        vtab_func(func, func.get_init_data(), output)
+    fn init_local_state(
+        &self,
+        _bind: &Self::BindData,
+        _global: Option<&Self::GlobalState>,
+        _context: &Context,
+        _column_data: InitColumnData<'_>,
+    ) -> Result<Option<Self::LocalState>> {
+        Ok(Some(WorkerState::default()))
     }
 
-    fn supports_pushdown() -> bool { true }
+    fn exec(
+        &self,
+        _bind: &Self::BindData,
+        global: Option<&Self::GlobalState>,
+        local: Option<&mut Self::LocalState>,
+        context: &Context,
+        mut output: DataChunkRef<'_>,
+        _column_info: ExecColumnInfo<'_>,
+    ) -> Result<()> {
+        let global = global.ok_or_else(|| err("missing global scan state"))?;
 
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+        let next = global.next_slice()?;
+        let Some((index, batch)) = next else {
+            output.get_vector_at_mut::<Unknown>(0)?.set_size(0)?;
+            return Ok(());
+        };
+        if let Some(local) = local {
+            local.batch_index = index;
+        }
+        let n_rows = batch.num_rows();
+
+        // Zero-copy hand-off: the Arrow buffers are moved into DuckDB, which
+        // references them from the resulting chunk instead of copying.
+        let (array, schema) = to_ffi(&StructArray::from(batch).to_data()).map_err(err)?;
+        let schema: ArrowSchema = unsafe { ArrowSchema::from_raw(std::mem::transmute(schema)) };
+        let array: ArrowArray = unsafe { ArrowArray::from_raw(std::mem::transmute(array)) };
+
+        let mut importer = ArrowImporter::new(context, schema, Some(VECTOR_SIZE))?;
+        importer.append_consumed(array, true)?;
+        let chunk = importer
+            .next_chunk()?
+            .ok_or_else(|| err("Arrow importer produced no chunk"))?;
+
+        for i in 0..chunk.col_count() {
+            let source = chunk.get_vector_at::<Unknown>(i)?;
+            // SAFETY: `chunk` stays alive for the rest of this call, and DuckDB's
+            // reference shares the buffers rather than borrowing them.
+            unsafe { output.get_vector_at_mut::<Unknown>(i)?.reference(source)? };
+        }
+        output.get_vector_at_mut::<Unknown>(0)?.set_size(n_rows)?;
+        Ok(())
     }
+}
 
-    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        named_parameters()
+impl TablePartitioningCallbacks for ReadPrs {
+    fn partition_data(
+        &self,
+        _bind: &Self::BindData,
+        _global: Option<&Self::GlobalState>,
+        local: Option<&mut Self::LocalState>,
+        _context: &Context,
+        _partition_data: PartitionData<'_>,
+    ) -> Result<usize> {
+        Ok(local.map_or(0, |l| l.batch_index))
     }
 }
 
 // ── extension entrypoint ──────────────────────────────────────────────────────
 
-#[duckdb_entrypoint_c_api(ext_name = "read_prs", min_duckdb_version = "v1.0.0")]
-pub fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn std::error::Error>> {
-    con.register_table_function::<ReadPrsVTab>("read_prs")?;
+#[duckdb_entrypoint_c_api_v2(extension_name = "read_prs", api_version = "v2.0.0")]
+pub fn entrypoint(extension: &Extension) -> Result<()> {
+    TableFunctionBuilder::new(
+        "read_prs",
+        SignatureBuilder::new()
+            .param(FunctionParameter::new::<String>("path").kind(FunctionParameterKind::PositionalOnly))
+            .param(FunctionParameter::new::<String>("format").default_value(None::<String>).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::with_default("missing_string_as_null", false).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::with_default("row_offset", 0u64).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::new::<u64>("n_rows").default_value(None::<u64>).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::with_default("preserve_order", false).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::new::<String>("row_index_name").default_value(None::<String>).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::new::<u64>("threads").default_value(None::<u64>).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::new::<u64>("batch_size").default_value(None::<u64>).kind(FunctionParameterKind::Named))
+            .param(FunctionParameter::with_default("value_labels_as_strings", false).kind(FunctionParameterKind::Named)),
+        ReadPrs,
+    )
+    .with_projection_pushdown(true)
+    .with_partitioning()
+    .register(extension)?;
     Ok(())
 }

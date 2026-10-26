@@ -12,6 +12,13 @@ Run from the polars_readstat project directory (where polars_readstat is install
 """
 
 import argparse
+import os
+
+# Cap thread pools before polars/duckdb are imported; the suite opens hundreds
+# of connections and uncapped pools can exhaust the session's thread limit.
+os.environ.setdefault("POLARS_MAX_THREADS", "4")
+os.environ.setdefault("RAYON_NUM_THREADS", "4")
+
 import signal
 import sys
 import tempfile
@@ -50,13 +57,35 @@ def collect(root: Path, *exts: str) -> list[Path]:
     return sorted(files)
 
 
+MAX_THREADS = 400  # abort well before the machine's thread limit is reached
+
+_con: duckdb.DuckDBPyConnection | None = None
+
+
 def open_db(ext_path: Path) -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect(config={"allow_unsigned_extensions": True})
-    con.execute(f"LOAD '{ext_path}'")
-    return con
+    # One shared connection for the whole run; avoids re-creating a database
+    # (and its thread pool) for each of the hundreds of files.
+    global _con
+    if _con is None:
+        _con = duckdb.connect(config={"allow_unsigned_extensions": True, "threads": 2})
+        _con.execute(f"LOAD '{ext_path}'")
+    return _con
+
+
+def guard_threads() -> None:
+    """Exit instead of exhausting the machine's thread limit on a leak."""
+    try:
+        with open("/proc/self/status") as f:
+            n = next(int(l.split()[1]) for l in f if l.startswith("Threads:"))
+    except OSError:  # no /proc (non-Linux): skip the guard
+        return
+    if n > MAX_THREADS:
+        print(f"ABORT: thread leak, {n} threads in test process (limit {MAX_THREADS})", file=sys.stderr, flush=True)
+        os._exit(3)
 
 
 def check(ext_path: Path, fn: str, path: Path, df: pl.DataFrame, label: str) -> bool:
+    guard_threads()
     try:
         con = open_db(ext_path)
 
@@ -65,7 +94,6 @@ def check(ext_path: Path, fn: str, path: Path, df: pl.DataFrame, label: str) -> 
         if len(ext_cols) != len(df.columns):
             print(f"  FAIL  {label}: col count {len(ext_cols)} != {len(df.columns)}"
                   f"  ext={ext_cols}  polars={df.columns}")
-            con.close()
             return False
 
         n_rows = df.height
@@ -86,8 +114,7 @@ def check(ext_path: Path, fn: str, path: Path, df: pl.DataFrame, label: str) -> 
                 (SELECT * FROM read_parquet('{pq_path}'))
             ) t
         """
-        diff = con.sql(diff_sql).fetchone()[0]
-        con.close()
+        diff = con.sql(diff_sql).fetchall()[0][0]
         Path(pq_path).unlink(missing_ok=True)
     except Exception as e:
         print(f"  FAIL  {label}: {e}")
