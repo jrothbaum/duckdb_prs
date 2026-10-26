@@ -2478,6 +2478,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "flate2",
+ "libc",
  "num_cpus",
  "polars",
  "polars-arrow",

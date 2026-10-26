@@ -1,4 +1,5 @@
 mod duckdb_file_source;
+mod write;
 
 use arrow::{
     array::{Array, RecordBatch, StructArray},
@@ -350,5 +351,6 @@ pub fn entrypoint(extension: &Extension) -> Result<()> {
     .with_projection_pushdown(true)
     .with_partitioning()
     .register(extension)?;
+    write::register(extension)?;
     Ok(())
 }
