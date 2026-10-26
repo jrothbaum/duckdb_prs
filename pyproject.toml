@@ -10,6 +10,3 @@ dependencies = [
     "polars-readstat",
     "pyarrow>=23.0.1",
 ]
-
-[tool.uv.sources]
-polars-readstat = { path = "../polars_readstat/target/wheels/polars_readstat-0.14.7-cp39-abi3-linux_x86_64.whl" }
