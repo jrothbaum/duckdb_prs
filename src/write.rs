@@ -32,6 +32,10 @@ enum Kind {
     /// SPSS with standard compression on by default.
     SpssCompressed,
     SasCsv,
+    /// SAS transport (`.xpt`).
+    Xpt,
+    /// SPSS portable (`.por`).
+    Por,
 }
 
 impl Kind {
@@ -41,6 +45,8 @@ impl Kind {
             Kind::Spss => "sav",
             Kind::SpssCompressed => "zsav",
             Kind::SasCsv => "sas_csv",
+            Kind::Xpt => "xpt",
+            Kind::Por => "por",
         }
     }
 
@@ -50,6 +56,8 @@ impl Kind {
             Kind::Stata => &["compress", "variable_labels"],
             Kind::Spss | Kind::SpssCompressed => &["compressed", "variable_labels"],
             Kind::SasCsv => &["dataset_name", "library", "gzip", "delete_csv_on_import", "variable_labels"],
+            Kind::Xpt => &["version", "table_name", "file_label", "variable_labels"],
+            Kind::Por => &["file_label", "variable_labels"],
         }
     }
 }
@@ -105,6 +113,14 @@ fn as_bool(name: &str, value: &Value) -> Result<bool> {
         .ok()
         .flatten()
         .ok_or_else(|| err(format!("option {name} must be true or false")))
+}
+
+fn as_int(name: &str, value: &Value) -> Result<i64> {
+    value
+        .get::<i64>()
+        .ok()
+        .flatten()
+        .ok_or_else(|| err(format!("option {name} must be a whole number")))
 }
 
 fn as_string(name: &str, value: &Value) -> Result<String> {
@@ -175,6 +191,18 @@ fn parse_options(kind: Kind, raw: HashMap<String, Value>) -> Result<Parsed> {
         Kind::Stata => ArrowWriteFormat::Stata { compress: get_bool("compress", false)? },
         Kind::Spss => ArrowWriteFormat::Spss { compressed: get_bool("compressed", false)? },
         Kind::SpssCompressed => ArrowWriteFormat::Spss { compressed: get_bool("compressed", true)? },
+        Kind::Xpt => {
+            let version = options.get("version").map_or(Ok(8), |v| as_int("version", v))?;
+            if version != 5 && version != 8 {
+                return Err(err(format!("FORMAT xpt: version must be 5 or 8, not {version}")));
+            }
+            ArrowWriteFormat::Xpt {
+                version: version as u8,
+                table_name: get_string("table_name")?,
+                file_label: get_string("file_label")?,
+            }
+        }
+        Kind::Por => ArrowWriteFormat::Por { file_label: get_string("file_label")? },
         Kind::SasCsv => ArrowWriteFormat::SasCsvImport {
             dataset_name: get_string("dataset_name")?,
             library: get_string("library")?,
@@ -301,7 +329,7 @@ fn into_polars_array(array: DuckArray) -> ArrowArray {
 }
 
 pub fn register(extension: &Extension) -> Result<()> {
-    for kind in [Kind::Stata, Kind::Spss, Kind::SpssCompressed, Kind::SasCsv] {
+    for kind in [Kind::Stata, Kind::Spss, Kind::SpssCompressed, Kind::SasCsv, Kind::Xpt, Kind::Por] {
         let mut builder = CopyFunctionBuilder::new(kind.name(), WriteFormat { kind });
         if !matches!(kind, Kind::SasCsv) {
             builder = builder.with_fallback_extension(kind.name());

@@ -1,8 +1,10 @@
 """Writing files with COPY ... TO.
 
-Checks, for Stata (dta), SPSS (sav, zsav) and the SAS CSV import bundle (sas_csv):
+Checks, for Stata (dta), SPSS (sav, zsav, por), SAS transport (xpt) and the SAS CSV import
+bundle (sas_csv):
   - values, types and nulls survive a write and re-read;
-  - every small test file in the polars_readstat suites round-trips through dta and sav;
+  - every small test file in the polars_readstat suites round-trips through dta, sav, xpt and
+    por, or is refused with a clear message (the limits of xpt and por);
   - options, variable labels, empty results, and the error messages for unsupported
     types, unknown options and remote paths.
 
@@ -63,15 +65,15 @@ def test_round_trip_values(con, tmp: str) -> None:
              (4, -4.0, 'delta', DATE '2024-02-29', TIMESTAMP '2024-02-29 23:59:59', true))
            v(id, score, name, d, ts, flag)"""
     )
-    for fmt in ("dta", "sav", "zsav"):
+    for fmt in ("dta", "sav", "zsav", "xpt", "por"):
         path = f"{tmp}/values.{fmt}"
         con.execute(f"COPY t TO '{path}' (FORMAT {fmt})")
         rows = con.sql(f"SELECT * FROM read_prs('{path}', preserve_order = true)").fetchall()
         check(len(rows) == 4, f"{fmt}: four rows")
         check([r[0] for r in rows] == [1, 2, 3, 4] or [r[0] for r in rows] == [1.0, 2.0, 3.0, 4.0], f"{fmt}: ids")
         check([r[1] for r in rows] == [1.5, None, 3.25, -4.0], f"{fmt}: doubles and null")
-        # a NULL string comes back as an empty string: these formats have no string null
-        check([r[2] for r in rows] == ["alpha", "beta", "", "delta"], f"{fmt}: strings")
+        # a NULL string is an empty string or NULL: these formats have no distinct string null
+        check([r[2] or "" for r in rows] == ["alpha", "beta", "", "delta"], f"{fmt}: strings")
         check(rows[0][3].isoformat() == "2020-01-15" and rows[2][3] is None, f"{fmt}: dates and null")
         check(str(rows[3][4]) == "2024-02-29 23:59:59" and rows[2][4] is None, f"{fmt}: timestamps and null")
 
@@ -125,7 +127,7 @@ def close(a, b, seconds: float) -> bool:
 # SPSS files keep date-times to the second, so those may differ by up to one second;
 # every other value must come back unchanged.
 def same_rows(src, back, fmt: str) -> str | None:
-    seconds = 1.0 if fmt == "sav" else 0.001
+    seconds = 0.001 if fmt == "dta" else 1.0
     if len(src) != len(back):
         return "row count"
     for i, (r1, r2) in enumerate(zip(src, back)):
@@ -145,8 +147,14 @@ def test_all_small_files(con, tmp: str) -> None:
         for f in glob.glob(str(TESTS / pattern), recursive=True)
         if "too_big" not in f
     )
-    tested = {"dta": 0, "sav": 0}
-    for fmt in ("dta", "sav"):
+    # Limits of the formats: a write may be refused with one of these messages instead.
+    refusals = {
+        "xpt": ("would be read back as padding", "outside the range an XPT file can hold"),
+        "por": ("exceeds 8 characters", "cannot be stored in an SPSS portable file"),
+    }
+    tested = {"dta": 0, "sav": 0, "xpt": 0, "por": 0}
+    refused = {"xpt": 0, "por": 0}
+    for fmt in ("dta", "sav", "xpt", "por"):
         for f in files:
             name = os.path.basename(f)
             try:
@@ -158,15 +166,24 @@ def test_all_small_files(con, tmp: str) -> None:
             out = f"{tmp}/{name}.{fmt}"
             try:
                 con.execute(f"COPY (SELECT * FROM read_prs('{f}', preserve_order = true)) TO '{out}' (FORMAT {fmt})")
+            except Exception as e:  # noqa: BLE001
+                message = str(e)
+                if any(r in message for r in refusals.get(fmt, ())):
+                    refused[fmt] += 1
+                else:
+                    check(False, f"{fmt} {name}", message.replace("\n", " ")[:140])
+                continue
+            try:
                 back = con.sql(f"SELECT * FROM read_prs('{out}', preserve_order = true)").fetchall()
             except Exception as e:  # noqa: BLE001
-                check(False, f"{fmt} {name}", str(e).replace("\n", " ")[:120])
+                check(False, f"{fmt} {name}: written file cannot be read", str(e).replace("\n", " ")[:120])
                 continue
             tested[fmt] += 1
             problem = same_rows(src, back, fmt)
             check(problem is None, f"{fmt} {name}", problem or "")
-    check(tested["dta"] > 500 and tested["sav"] > 500, "enough files tested", str(tested))
-    print(f"  files written and re-read: dta {tested['dta']}, sav {tested['sav']}")
+    check(tested["dta"] > 500 and tested["sav"] > 500, "enough dta and sav files tested", str(tested))
+    check(tested["xpt"] > 500 and tested["por"] > 400, "enough xpt and por files tested", str(tested))
+    print(f"  files written and re-read: {tested}; refused for the format's limits: {refused}")
 
 
 # ── options, labels, empty results and errors ────────────────────────────────
@@ -191,6 +208,34 @@ def test_options_and_errors(con, tmp: str) -> None:
     con.execute(f"COPY (SELECT * FROM t2 WHERE id < 0) TO '{tmp}/empty.dta' (FORMAT dta)")
     check(con.sql(f"SELECT * FROM read_prs('{tmp}/empty.dta') LIMIT 0").columns == ["id", "score", "name"], "empty result columns")
     check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/empty.dta')").fetchall() == [(0,)], "empty result rows")
+
+    # SAS transport and SPSS portable: options, labels and the format taken from the file name
+    con.execute(f"COPY t2 TO '{tmp}/o.xpt' (FORMAT xpt, version 5, table_name 'MYDATA', file_label 'A label', variable_labels {{'score': 'The score'}})")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/o.xpt')").fetchall() == [(5,)], "xpt version 5 with options")
+    check(ps.ScanReadstat(path=f"{tmp}/o.xpt").metadata["columns"][1].get("label") == "The score", "xpt variable label")
+    con.execute(f"COPY t2 TO '{tmp}/o8.xpt' (FORMAT xpt, version 8)")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/o8.xpt')").fetchall() == [(5,)], "xpt version 8")
+    con.execute(f"COPY t2 TO '{tmp}/auto.xpt'")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/auto.xpt')").fetchall() == [(5,)], "xpt format from file name")
+    con.execute(f"COPY (SELECT id AS ID, score AS SCORE, name AS NAME FROM t2) TO '{tmp}/o.por' (FORMAT por, file_label 'A label', variable_labels {{'SCORE': 'The score'}})")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/o.por')").fetchall() == [(5,)], "por with options")
+    con.execute(f"COPY (SELECT id AS ID FROM t2) TO '{tmp}/auto.por'")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/auto.por')").fetchall() == [(5,)], "por format from file name")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/auto.por', format = 'spss_por')").fetchall() == [(5,)], "por format name")
+    check(con.sql(f"SELECT count(*) FROM read_prs('{tmp}/o.xpt', format = 'sas_xpt')").fetchall() == [(5,)], "xpt format name")
+
+    check(fails(con, f"COPY t2 TO '{tmp}/x.xpt' (FORMAT xpt, version 6)", "version must be 5 or 8"), "xpt bad version")
+    check(fails(con, f"COPY t2 TO '{tmp}/x.xpt' (FORMAT xpt, compress true)", 'unknown option "compress"'), "xpt unknown option")
+    check(fails(con, f"COPY (SELECT 'a' AS a, 'b' AS b UNION ALL SELECT '', '') TO '{tmp}/x.xpt' (FORMAT xpt)", "would be read back as padding"), "xpt blank last row")
+    check(fails(con, f"COPY (SELECT 1e100 AS x) TO '{tmp}/x.xpt' (FORMAT xpt)", "outside the range an XPT file can hold"), "xpt number out of range")
+    check(fails(con, f"COPY (SELECT 1 AS a_long_column_name) TO '{tmp}/x.por' (FORMAT por)", "exceeds 8 characters"), "por long name")
+    check(fails(con, f"COPY (SELECT 'caf\u00e9' AS T) TO '{tmp}/x.por' (FORMAT por)", "cannot be stored in an SPSS portable file"), "por non-ASCII text")
+    con.execute(f"COPY (SELECT 1e100 AS X, -2e307 AS Y, TIMESTAMP '2018-03-17 12:34:56' AS T) TO '{tmp}/big.por' (FORMAT por)")
+    big = con.sql(f"SELECT * FROM read_prs('{tmp}/big.por')").fetchall()[0]
+    check(abs(big[0] - 1e100) <= 1e91 and abs(big[1] + 2e307) <= 2e298, "por keeps very large numbers", str(big))
+    check(str(big[2]).startswith("2018-03-17 12:34:56"), "por date-times", str(big[2]))
+    con.execute(f"COPY (SELECT '' AS T FROM range(3)) TO '{tmp}/emptytext.por' (FORMAT por)")
+    check(str(con.sql(f"SELECT * FROM read_prs('{tmp}/emptytext.por') LIMIT 0").types[0]) == "VARCHAR", "por all-empty text column")
 
     check(fails(con, f"COPY t2 TO '{tmp}/x.dta' (FORMAT dta, compresss true)", 'unknown option "compresss"'), "unknown option")
     check(fails(con, f"COPY (SELECT [1, 2] AS l) TO '{tmp}/x.dta' (FORMAT dta)", "cannot be written"), "list column")
