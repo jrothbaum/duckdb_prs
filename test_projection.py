@@ -18,7 +18,8 @@ T = str(HERE.parent / "polars_readstat" / "crates" / "polars_readstat_rs" / "tes
 EXT = HERE / "target" / "release" / "read_prs.duckdb_extension"
 con = duckdb.connect(config={"allow_unsigned_extensions": True})
 con.execute(f"LOAD '{EXT}'")
-files = ["sas/data/too_big/topical.sas7bdat", "sas/data/data_pandas/airline.sas7bdat", "stata/data/too_big/usa_00009.dta", "stata/data/stata14_118.dta", "spss/data/too_big/GSS2024.sav", "spss/data/sample.sav"]
+files = ["sas/data/too_big/topical.sas7bdat", "sas/data/data_pandas/airline.sas7bdat", "stata/data/too_big/usa_00009.dta", "stata/data/stata14_118.dta", "spss/data/too_big/GSS2024.sav", "spss/data/sample.sav",
+         "sas/data/xpt/ACQ_G.xpt", "sas/data/xpt/dates_xpt_v8.xpt", "spss/data/sample.por"]
 ok = bad = 0
 for f in files:
     p = T + f

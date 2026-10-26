@@ -166,6 +166,14 @@ def test_spss(ext_path, every=1):
     return test_format(ext_path, "read_prs", collect(SPSS_DIR, "sav", "zsav"), "SPSS", every)
 
 
+def test_xpt(ext_path, every=1):
+    return test_format(ext_path, "read_prs", collect(SAS_DIR, "xpt", "xpt5", "xpt8"), "SAS transport (xpt)", every)
+
+
+def test_por(ext_path, every=1):
+    return test_format(ext_path, "read_prs", collect(SPSS_DIR, "por"), "SPSS portable (por)", every)
+
+
 def main():
     signal.signal(signal.SIGALRM, lambda s, f: sys.exit(f"\nTimed out after {SUITE_TIMEOUT_SECS}s"))
     signal.alarm(SUITE_TIMEOUT_SECS)
@@ -182,7 +190,8 @@ def main():
         sys.exit(f"Extension not found: {ext_path}\nRun: cargo build --release")
 
     total_passed = total_failed = 0
-    for passed, failed in [test_sas(ext_path, args.every), test_stata(ext_path, args.every), test_spss(ext_path, args.every)]:
+    for passed, failed in [test_sas(ext_path, args.every), test_stata(ext_path, args.every), test_spss(ext_path, args.every),
+                           test_xpt(ext_path, args.every), test_por(ext_path, args.every)]:
         total_passed += passed
         total_failed += failed
 

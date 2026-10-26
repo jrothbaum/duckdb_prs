@@ -61,6 +61,10 @@ enum FileFormat {
     Sas,
     Dta,
     Sav,
+    /// SAS transport (`.xpt`)
+    Xpt,
+    /// SPSS portable (`.por`)
+    Por,
 }
 
 fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat> {
@@ -69,7 +73,9 @@ fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat> {
             "sas7bdat" | "sas" => Ok(FileFormat::Sas),
             "dta" | "stata" => Ok(FileFormat::Dta),
             "sav" | "zsav" | "spss" => Ok(FileFormat::Sav),
-            other => Err(err(format!("unknown format '{other}'; expected sas7bdat, dta, or sav"))),
+            "xpt" | "sas_xpt" => Ok(FileFormat::Xpt),
+            "por" | "spss_por" => Ok(FileFormat::Por),
+            other => Err(err(format!("unknown format '{other}'; expected sas7bdat, dta, sav, xpt, or por"))),
         };
     }
     let ext = Path::new(path)
@@ -81,8 +87,10 @@ fn detect_format(path: &str, override_fmt: Option<&str>) -> Result<FileFormat> {
         "sas7bdat" => Ok(FileFormat::Sas),
         "dta" => Ok(FileFormat::Dta),
         "sav" | "zsav" => Ok(FileFormat::Sav),
+        "xpt" | "xpt5" | "xpt8" => Ok(FileFormat::Xpt),
+        "por" => Ok(FileFormat::Por),
         other => Err(err(format!(
-            "cannot infer format from extension '.{other}'; use format='sas7bdat', 'dta', or 'sav'"
+            "cannot infer format from extension '.{other}'; use format='sas7bdat', 'dta', 'sav', 'xpt', or 'por'"
         ))),
     }
 }
@@ -203,6 +211,8 @@ impl TableFunctionCallbacks for ReadPrs {
             FileFormat::Sas => sas_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), row_index),
             FileFormat::Dta => stata_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), Some(value_labels_as_strings), row_index),
             FileFormat::Sav => spss_arrow_output::read_to_arrow_schema_ffi_from_source(source.clone(), Some(value_labels_as_strings), row_index),
+            FileFormat::Xpt => sas_arrow_output::read_xpt_to_arrow_schema_ffi_from_source(source.clone(), row_index),
+            FileFormat::Por => spss_arrow_output::read_por_to_arrow_schema_ffi_from_source(source.clone(), row_index),
         }
         .map_err(err)?;
         let (n_columns, schema) = unsafe { take_schema(schema_ptr) }?;
@@ -249,7 +259,15 @@ impl TableFunctionCallbacks for ReadPrs {
             ),
             FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi_from_source(
                 bind.source.clone(), bind.threads, bind.missing_string_as_null, Some(bind.value_labels_as_strings), bind.batch_size, offset, n_rows,
-                bind.preserve_order, bind.row_index_name.clone(), Some(projected),
+                bind.preserve_order, bind.row_index_name.clone(), Some(projected.clone()),
+            ),
+            FileFormat::Xpt => sas_arrow_output::read_xpt_to_arrow_stream_ffi_from_source(
+                bind.source.clone(), bind.threads, bind.missing_string_as_null, bind.batch_size, offset, n_rows,
+                bind.preserve_order, bind.row_index_name.clone(), Some(projected.clone()),
+            ),
+            FileFormat::Por => spss_arrow_output::read_por_to_arrow_stream_ffi_from_source(
+                bind.source.clone(), bind.missing_string_as_null, bind.batch_size, offset, n_rows,
+                bind.row_index_name.clone(), Some(projected),
             ),
         }
         .map_err(err)?;
