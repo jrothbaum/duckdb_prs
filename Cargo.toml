@@ -12,5 +12,5 @@ strip = "symbols"
 [dependencies]
 duckdb-neo = { version = "0.20000", default-features = false, features = ["build-extension"] }
 duckdb-loadable-macros = { version = "1.20000", features = ["neo"] }
-polars-readstat-rs = { path = "/home/jrothbaum/Coding/claude_code/polars_readstat/crates/polars_readstat_rs" }
+polars-readstat-rs = "0.27.0"
 arrow = { version = "60", features = ["ffi"] }
