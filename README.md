@@ -23,11 +23,13 @@ It reads files with the same Rust core as [polars_readstat](https://github.com/j
 The extension is built for **DuckDB 2.0.0**.
 
 ```bash
-cargo install cargo-duckdb-ext-tools    # once
-./build.sh                              # produces target/release/read_prs.duckdb_extension
+git clone --recurse-submodules https://github.com/jrothbaum/duckdb_prs
+cd duckdb_prs
+make configure
+make release          # produces build/release/read_prs.duckdb_extension
 ```
 
-You need a recent Rust toolchain (1.95 or newer). The extension is not signed, so DuckDB has to be told to allow unsigned extensions when you load it.
+You need a recent Rust toolchain (1.95 or newer), Python 3, `make` and `git`. The extension is not signed, so DuckDB has to be told to allow unsigned extensions when you load it.
 
 **DuckDB command line**
 
@@ -35,7 +37,7 @@ You need a recent Rust toolchain (1.95 or newer). The extension is not signed, s
 duckdb -unsigned
 ```
 ```sql
-LOAD '/path/to/read_prs.duckdb_extension';
+LOAD '/path/to/duckdb_prs/build/release/read_prs.duckdb_extension';
 ```
 
 **Python**
@@ -44,7 +46,7 @@ LOAD '/path/to/read_prs.duckdb_extension';
 import duckdb
 
 con = duckdb.connect(config={"allow_unsigned_extensions": True})
-con.execute("LOAD '/path/to/read_prs.duckdb_extension'")
+con.execute("LOAD '/path/to/duckdb_prs/build/release/read_prs.duckdb_extension'")
 ```
 
 ## Usage
