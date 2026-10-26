@@ -117,19 +117,17 @@ struct WorkerState {
 
 struct ScanState {
     stream: Mutex<StreamState>,
-    /// Bind-declared column index of each projected output column.
-    projected: Vec<usize>,
 }
 
 impl ScanState {
-    /// Returns the next batch of at most `VECTOR_SIZE` rows, projected, or
+    /// Returns the next batch of at most `VECTOR_SIZE` rows, or
     /// `None` once the stream is exhausted.
     fn next_slice(&self) -> Result<Option<(usize, RecordBatch)>> {
         let mut st = self.stream.lock().map_err(|_| err("scan state poisoned"))?;
         let batch = match st.pending.take() {
             Some(b) => b,
             None => match st.reader.as_mut().and_then(|r| r.next()) {
-                Some(Ok(b)) => b.project(&self.projected).map_err(err)?,
+                Some(Ok(b)) => b,
                 Some(Err(e)) => return Err(err(e)),
                 None => return Ok(None),
             },
@@ -242,15 +240,15 @@ impl TableFunctionCallbacks for ReadPrs {
         let stream_ptr = match bind.format {
             FileFormat::Sas => sas_arrow_output::read_to_arrow_stream_ffi_from_source(
                 bind.source.clone(), bind.threads, bind.missing_string_as_null, bind.batch_size, offset, n_rows,
-                bind.preserve_order, bind.row_index_name.clone(),
+                bind.preserve_order, bind.row_index_name.clone(), Some(projected.clone()),
             ),
             FileFormat::Dta => stata_arrow_output::read_to_arrow_stream_ffi_from_source(
                 bind.source.clone(), bind.threads, bind.missing_string_as_null, Some(bind.value_labels_as_strings), bind.batch_size, offset, n_rows,
-                bind.preserve_order, bind.row_index_name.clone(),
+                bind.preserve_order, bind.row_index_name.clone(), Some(projected.clone()),
             ),
             FileFormat::Sav => spss_arrow_output::read_to_arrow_stream_ffi_from_source(
                 bind.source.clone(), bind.threads, bind.missing_string_as_null, Some(bind.value_labels_as_strings), bind.batch_size, offset, n_rows,
-                bind.preserve_order, bind.row_index_name.clone(),
+                bind.preserve_order, bind.row_index_name.clone(), Some(projected),
             ),
         }
         .map_err(err)?;
@@ -258,7 +256,6 @@ impl TableFunctionCallbacks for ReadPrs {
 
         let state = ScanState {
             stream: Mutex::new(StreamState { reader: Some(reader), pending: None, next_index: 0 }),
-            projected,
         };
         // One worker: the decoder already parallelises internally.
         Ok((Some(state), Some(std::thread::available_parallelism().map_or(1, |n| n.get()))))
