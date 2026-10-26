@@ -1,6 +1,6 @@
 # duckdb_prs
 
-A DuckDB extension for reading SAS (`.sas7bdat`), Stata (`.dta`) and SPSS (`.sav`/`.zsav`) files directly in SQL, and for writing query results to Stata, SPSS and SAS (CSV plus import script) files.
+A DuckDB extension for reading SAS (`.sas7bdat`), Stata (`.dta`) and SPSS (`.sav`/`.zsav`) files directly in SQL, and for writing query results to Stata, SPSS and SAS (CSV plus import script) files. It also reads and writes the less common SAS transport (`.xpt`) and SPSS portable (`.por`) formats.
 
 ```sql
 SELECT * FROM read_prs('survey.sav') LIMIT 10;

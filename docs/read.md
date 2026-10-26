@@ -15,6 +15,8 @@ The format is taken from the file extension:
 | `.sas7bdat` | SAS |
 | `.dta` | Stata |
 | `.sav`, `.zsav` | SPSS |
+| `.xpt`, `.xpt5`, `.xpt8` | SAS transport (version 5 or 8) |
+| `.por` | SPSS portable |
 
 If a file has a different or no extension, say what it is with `format`:
 
@@ -22,7 +24,7 @@ If a file has a different or no extension, say what it is with `format`:
 SELECT * FROM read_prs('survey_export', format = 'dta');
 ```
 
-`format` accepts `'sas7bdat'` (or `'sas'`), `'dta'` (or `'stata'`) and `'sav'` (or `'zsav'`, `'spss'`).
+`format` accepts `'sas7bdat'` (or `'sas'`), `'dta'` (or `'stata'`), `'sav'` (or `'zsav'`, `'spss'`), `'xpt'` (or `'sas_xpt'`) and `'por'` (or `'spss_por'`).
 
 ## Reading only what you need
 
@@ -58,14 +60,14 @@ Options are passed by name: `read_prs('file.dta', preserve_order = true)`.
 | Option | Default | Applies to | What it does |
 |---|---|---|---|
 | `format` | from the file extension | all | Force the format. See [Formats](#formats). |
-| `preserve_order` | `false` | all | Return rows in file order. See [Row order](#row-order). |
+| `preserve_order` | `false` | all except `.por` | Return rows in file order. See [Row order](#row-order). |
 | `row_index_name` | none | all | Add a 0-based row number column with this name, as the last column. See [Row order](#row-order). |
-| `value_labels_as_strings` | `false` | Stata, SPSS | Return the text of value labels instead of the numeric codes. See [Value labels](#value-labels). |
+| `value_labels_as_strings` | `false` | Stata, SPSS (`.sav`) | Return the text of value labels instead of the numeric codes. See [Value labels](#value-labels). |
 | `missing_string_as_null` | `false` | all | Return empty strings as `NULL`. |
 | `row_offset` | `0` | all | Skip this many rows from the start of the file. |
 | `n_rows` | all rows | all | Read at most this many rows (after `row_offset`). |
-| `threads` | DuckDB's `threads` setting | all | Number of threads used to decode the file. |
-| `batch_size` | automatic | all | Rows decoded per batch. Rarely needs changing. |
+| `threads` | DuckDB's `threads` setting | all except `.por` | Number of threads used to decode the file. |
+| `batch_size` | automatic | all | Rows decoded per batch (for `.por`, rows returned per batch). Rarely needs changing. |
 
 ## Row order
 
@@ -157,6 +159,15 @@ If credentials are missing or wrong, the query fails with the error from DuckDB'
 
 | Message | What to do |
 |---|---|
-| `cannot infer format from extension ...` | The file name does not end in `.sas7bdat`, `.dta`, `.sav` or `.zsav`. Pass `format = '...'`. |
+| `cannot infer format from extension ...` | The file name does not end in `.sas7bdat`, `.dta`, `.sav`, `.zsav`, `.xpt` or `.por`. Pass `format = '...'`. |
 | `file has no columns` | The file contains no variables. |
 | `DuckDB VFS open failed for '...'` | The file could not be opened: check the path, and for remote files, your credentials. |
+
+## SAS transport and SPSS portable files
+
+`.xpt` and `.por` files read like the other formats, with a few differences:
+
+- **`.por` is read in one pass.** The whole file is read into memory before any rows are returned, so `threads` and `preserve_order` have no effect (rows are always in file order), and memory is the size of the table. Other formats are read in batches.
+- **Names.** Variable names in `.por` files are always upper case.
+- **No value labels.** `value_labels_as_strings` does nothing for `.xpt` and `.por` files.
+- `missing_string_as_null`, `row_offset`, `n_rows`, `row_index_name` and column selection work as for the other formats.

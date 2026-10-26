@@ -23,8 +23,10 @@ TO 'adults.dta' (FORMAT dta);
 | `sav` | SPSS `.sav` | |
 | `zsav` | SPSS `.sav` with compression turned on | |
 | `sas_csv` | A SAS import bundle | A data file (`.csv`) and a `.sas` script that loads it. See [SAS](#sas). |
+| `xpt` | SAS transport `.xpt` | See [SAS transport](#sas-transport). |
+| `por` | SPSS portable `.por` | See [SPSS portable](#spss-portable). |
 
-The format is chosen from the file name when it ends in `.dta`, `.sav` or `.zsav`, so `COPY survey TO 'survey.dta'` works without `FORMAT`. For `sas_csv`, and for any other file name, give the format. Files can only be written to a local path, not to S3 or other remote locations.
+The format is chosen from the file name when it ends in `.dta`, `.sav`, `.zsav`, `.xpt` or `.por`, so `COPY survey TO 'survey.dta'` works without `FORMAT`. For `sas_csv`, and for any other file name, give the format. Files can only be written to a local path, not to S3 or other remote locations.
 
 ## Options
 
@@ -39,6 +41,9 @@ Options go in the parentheses after the format: `(FORMAT dta, compress true)`.
 | `library` | `sas_csv` | none | SAS library to save the dataset in. If not set, the dataset goes to `WORK`. |
 | `gzip` | `sas_csv` | `false` | Write `<name>.csv.gz` instead of `<name>.csv`. Needs SAS 9.4 Maintenance 5 or later to read. |
 | `delete_csv_on_import` | `sas_csv` | `false` | The script deletes the data file after SAS has loaded it. |
+| `version` | `xpt` | `8` | SAS transport version, `5` or `8`. |
+| `table_name` | `xpt` | none | Name of the table inside the file. |
+| `file_label` | `xpt`, `por` | none | A label for the whole file. |
 
 An option that does not exist for the format is an error that lists the options you can use.
 
@@ -117,6 +122,8 @@ If a result is too large to write in one go, write it as several files, each fro
 
 ## Round trips
 
+The files this writes are checked by reading them back with `read_prs`, for every small test file in polars_readstat's test suites. They have not been opened in SAS, Stata or SPSS themselves, so check a file in your own software before relying on it there.
+
 A file written with `COPY` can be read back with [`read_prs`](read.md):
 
 ```sql
@@ -125,3 +132,31 @@ SELECT * FROM read_prs('survey.dta');
 ```
 
 Value labels and other metadata in the original file are not carried over; only the data and any `variable_labels` you give.
+
+## SAS transport
+
+```sql
+COPY (SELECT id, age, income FROM survey) TO 'survey.xpt' (FORMAT xpt, version 8);
+```
+
+SAS transport is a standard format for exchanging SAS data. Things to know:
+
+- **Version.** Version 8 (the default) allows column names up to 32 characters; version 5 allows 8. Names are written as they are, so keep them to letters, digits and underscores, starting with a letter, for SAS to accept them. A name that is too long is an error that names the column.
+- **Numbers** are stored as IBM floating point, which holds values up to about 7.2e75 in size. A larger value is an error that names the column and the value, because it would otherwise be written as missing. Values too small to hold (below about 5e-79 in size) are written as zero.
+- **A blank last row.** An XPT file does not record how many rows it has. If every column is text and the last row is blank in all of them, that row would be taken for padding and lost when the file is read, so the write is refused. Remove the trailing blank rows, or include a numeric column.
+- **Text** is written as UTF-8 bytes. A `NULL` text value is written as blank.
+- **Size and speed.** The 9,988,394-row numeric test table took about 6 seconds and 3.4 GB.
+
+## SPSS portable
+
+```sql
+COPY (SELECT ID, AGE FROM survey) TO 'survey.por' (FORMAT por);
+```
+
+Portable files are an older text-based SPSS format that has strict limits, so some tables cannot be written. In every such case the write is refused with a message that says what to change; nothing is written incorrectly.
+
+- **Names** are at most 8 characters. They are written in upper case, characters that are not allowed become `_`, and names that end up the same get a number added (`a` and `A` become `A` and `A_1`). A name longer than 8 characters is an error that names the column: rename it in the query (`SELECT long_name AS short FROM ...`).
+- **Text** can only use printable ASCII characters (letters, digits, spaces and the usual punctuation). Accented letters, other alphabets and line breaks cannot be stored, and are refused rather than written as damaged text.
+- **Numbers** of any size are kept. A `NULL` number is written as missing.
+- Date-times are kept to the second.
+- **Size and speed.** The 9,988,394-row numeric test table took about 16 seconds and 1.9 GB.

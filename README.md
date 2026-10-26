@@ -1,6 +1,6 @@
 # duckdb_prs
 
-A DuckDB extension for reading SAS (`.sas7bdat`), Stata (`.dta`) and SPSS (`.sav`/`.zsav`) files directly in SQL, and for writing query results to Stata, SPSS and SAS (CSV plus import script) files.
+A DuckDB extension for reading SAS (`.sas7bdat`), Stata (`.dta`) and SPSS (`.sav`/`.zsav`) files directly in SQL, and for writing query results to Stata, SPSS and SAS (CSV plus import script) files. It also reads and writes the less common SAS transport (`.xpt`) and SPSS portable (`.por`) formats.
 
 ```sql
 SELECT * FROM read_prs('survey.sav') LIMIT 10;
@@ -50,7 +50,7 @@ con.execute("LOAD '/path/to/read_prs.duckdb_extension'")
 ## Usage
 
 ```sql
--- Read a file; the format comes from the extension (.sas7bdat, .dta, .sav, .zsav)
+-- Read a file; the format comes from the extension (.sas7bdat, .dta, .sav, .zsav, .xpt, .por)
 SELECT * FROM read_prs('survey.dta');
 
 -- Only the columns you select are read from the file
@@ -71,7 +71,7 @@ SELECT * FROM read_prs('wave1.dta') UNION ALL SELECT * FROM read_prs('wave2.dta'
 
 | Option | Default | What it does |
 |---|---|---|
-| `format` | from file extension | `'sas7bdat'` (or `'sas'`), `'dta'` (or `'stata'`), `'sav'` (or `'zsav'`, `'spss'`). Needed only when the file name has no recognised extension. |
+| `format` | from file extension | `'sas7bdat'` (or `'sas'`), `'dta'` (or `'stata'`), `'sav'` (or `'zsav'`, `'spss'`), `'xpt'` (or `'sas_xpt'`), `'por'` (or `'spss_por'`). Needed only when the file name has no recognised extension. |
 | `preserve_order` | `false` | Return rows in file order. Without it, rows can arrive in any order, which is faster and uses less memory. |
 | `row_index_name` | none | Add a 0-based row number column with this name, as the last column. Use it to `ORDER BY` the original order without `preserve_order`. |
 | `value_labels_as_strings` | `false` | Stata and SPSS: return the text of value labels instead of the numeric codes. |
@@ -101,26 +101,30 @@ COPY (SELECT * FROM survey) TO 'survey.dta' (
 | `dta` | Stata | `compress`, `variable_labels` |
 | `sav`, `zsav` | SPSS (`zsav` compresses) | `compressed`, `variable_labels` |
 | `sas_csv` | a `.csv` and a `.sas` script that loads it in SAS | `dataset_name`, `library`, `gzip`, `delete_csv_on_import`, `variable_labels` |
+| `xpt` | SAS transport | `version`, `table_name`, `file_label`, `variable_labels` |
+| `por` | SPSS portable | `file_label`, `variable_labels` |
 
-Files are written to local paths. See [Writing files](docs/write.md) for column types, labels, what to expect, and size and speed.
+Files are written to local paths. See [Writing files](docs/write.md) for column types, labels, what to expect, and size and speed. The SAS transport and SPSS portable formats have limits of their own (for example, `por` allows names of 8 characters and ASCII text only), described on that page.
 
 ## Benchmarks
 
-`read_prs` compared with polars_readstat and the community `read_stat` extension, reading whole files, with `read_prs` as the baseline (lower is faster):
+Time to read whole files into a Polars DataFrame, in milliseconds. `read_prs` is compared with polars_readstat and the community `read_stat` DuckDB extension; the figure in brackets is each tool's time relative to `read_prs` (so below 1x is faster than `read_prs`, above 1x is slower).
 
-| File | Rows | read_prs | polars_readstat | read_stat |
-|---|---|---|---|---|
-| SAS | 623,757 | 1.00x (1003 ms) | 0.44x | 19.7x |
-| SAS | 84,355 | 1.00x (96 ms) | 0.56x | 9.9x |
-| Stata | 9,988,394 | 1.00x (389 ms) | 0.40x | 44.9x |
-| SPSS | 73,745 | 1.00x (1078 ms) | 1.18x | 7.7x |
-| **All 7 files** | | **1.00x (2735 ms)** | **0.74x** | **17.5x** |
+| File | Format | Rows | read_prs | polars_readstat | read_stat |
+|---|---|---|---|---|---|
+| psam_p17 | SAS | 623,757 | 1,003 ms | 438 ms (0.44x) | 19,800 ms (19.7x) |
+| nls | SAS | 13,548 | 18 ms | 3 ms (0.17x) | 15 ms (0.83x) |
+| numeric_1000000_2 | SAS | 1,000,000 | 34 ms | 8 ms (0.24x) | 699 ms (20.6x) |
+| topical | SAS | 84,355 | 96 ms | 54 ms (0.56x) | 950 ms (9.9x) |
+| usa_00009 | Stata | 9,988,394 | 389 ms | 156 ms (0.40x) | 17,484 ms (44.9x) |
+| anes_timeseries_cdf | SPSS | 73,745 | 1,078 ms | 1,277 ms (1.18x) | 8,311 ms (7.7x) |
+| GSS2024 | SPSS | 3,309 | 118 ms | 88 ms (0.75x) | 676 ms (5.7x) |
+| **All files** | | | **2,735 ms** | **2,024 ms (0.74x)** | **47,936 ms (17.5x)** |
 
-See [Benchmarks](docs/benchmarks.md) for every file, the cost of options such as `preserve_order`, and how to run it yourself.
+These come from one machine with the files stored locally, so look at the relative sizes rather than the exact times. `read_stat` has no DuckDB 2.0 build yet, so it was run on DuckDB 1.5.2. See [Benchmarks](docs/benchmarks.md) for the cost of options such as `preserve_order` and of selecting only a few columns, and for how to run it yourself.
 
 ## Not supported
 
 - One file per `read_prs` call; for several files use `UNION ALL`. File globs such as `'*.dta'` are not supported.
 - Writing: local files only, no binary `.sas7bdat` (SAS gets a CSV plus a script), and value labels cannot be written (variable labels can).
-- SAS transport (`.xpt`) and SPSS portable (`.por`) files cannot be read or written.
 - SAS format catalogs (`.sas7bcat`) and per-column metadata such as variable labels are not available.
