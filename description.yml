@@ -1,0 +1,49 @@
+# Draft descriptor for DuckDB's community extensions repository
+# (duckdb/community-extensions, extensions/read_prs/description.yml).
+#
+# Before submitting:
+#   - set repo.ref to the commit to build;
+#   - confirm with the community-extensions maintainers how a pure-Rust extension on DuckDB's
+#     v2 C API declares its build: `cmake` is the only value their documentation lists, and this
+#     extension builds with cargo through extension-ci-tools' `make configure` / `make release`.
+extension:
+  name: read_prs
+  description: Read SAS, Stata and SPSS files directly in SQL, and write query results to Stata, SPSS and SAS files.
+  version: 0.1.0
+  language: Rust
+  build: cmake
+  license: Apache-2.0
+  maintainers:
+    - jrothbaum
+
+repo:
+  github: jrothbaum/duckdb_prs
+  ref: main  # replace with a commit hash when submitting
+
+docs:
+  hello_world: |
+    -- Write a small Stata file, then read it back
+    COPY (SELECT 1 AS id, 'Ada' AS name, DATE '1815-12-10' AS born) TO 'example.dta' (FORMAT dta);
+    SELECT * FROM read_prs('example.dta');
+  extended_description: |
+    `read_prs(path)` is a table function that reads SAS (`.sas7bdat`), Stata (`.dta`) and SPSS
+    (`.sav`, `.zsav`) files, and the less common SAS transport (`.xpt`) and SPSS portable (`.por`)
+    formats. The format is taken from the file extension.
+
+    ```sql
+    SELECT age, income FROM read_prs('survey.sav') WHERE age >= 18;
+    CREATE TABLE survey AS SELECT * FROM read_prs('survey.sas7bdat');
+    ```
+
+    - Only the columns a query uses are read from the file.
+    - Files are opened through DuckDB's file system, so `s3://` paths use your DuckDB secrets and
+      settings.
+    - Options follow polars_readstat: `preserve_order`, `row_index_name`,
+      `value_labels_as_strings`, `missing_string_as_null`, `row_offset`, `n_rows`, `threads` and
+      `batch_size`.
+    - `COPY ... TO` writes any query result as Stata (`FORMAT dta`), SPSS (`FORMAT sav`), a CSV
+      plus a SAS script that loads it (`FORMAT sas_csv`), SAS transport (`FORMAT xpt`) or SPSS
+      portable (`FORMAT por`), with variable labels.
+
+    It reads files with the same Rust core as [polars_readstat](https://github.com/jrothbaum/polars_readstat).
+    Documentation: https://github.com/jrothbaum/duckdb_prs

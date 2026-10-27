@@ -130,3 +130,7 @@ These come from one machine with the files stored locally, so look at the relati
 - One file per `read_prs` call; for several files use `UNION ALL`. File globs such as `'*.dta'` are not supported.
 - Writing: local files only, no binary `.sas7bdat` (SAS gets a CSV plus a script), and value labels cannot be written (variable labels can).
 - SAS format catalogs (`.sas7bcat`) and per-column metadata such as variable labels are not available.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
