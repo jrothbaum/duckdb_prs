@@ -73,7 +73,7 @@ Options are passed by name: `read_prs('file.dta', preserve_order = true)`.
 
 By default, rows can come back in any order. This is faster and uses less memory, and it is the same default as polars_readstat. If your query has an `ORDER BY`, or you do not care about order, nothing more is needed.
 
-To get rows in the order they are stored in the file, set `preserve_order`:
+To get rows in the order they are stored in the file, set `preserve_order`; that is the option that controls order (`threads` only changes how the file is decoded).
 
 ```sql
 SELECT * FROM read_prs('survey.dta', preserve_order = true);
@@ -154,6 +154,16 @@ SELECT * FROM read_prs('s3://my-bucket/path/survey.dta');
 See DuckDB's documentation for its `httpfs` extension for all the ways to supply credentials. The options on this page work with remote files too.
 
 If credentials are missing or wrong, the query fails with the error from DuckDB's file system.
+
+## Converting to Parquet
+
+`COPY` streams a file into Parquet without holding the whole file in memory:
+
+```sql
+COPY (SELECT * FROM read_prs('big.sas7bdat')) TO 'big.parquet' (FORMAT parquet);
+```
+
+Memory depends on the number of columns (and how much text they hold), not the number of rows. Rows can be written in any order unless you set `preserve_order = true`. To lower memory on wide tables, use smaller Parquet row groups and fewer DuckDB threads (`SET threads = 4;` and `ROW_GROUP_SIZE 10000` in the `COPY` options); add `preserve_order = true, threads = 1` to keep the order with the least memory. See the [README](https://github.com/jrothbaum/duckdb_prs#converting-files-to-parquet) for the commands and for timings and memory use on large files.
 
 ## Errors
 

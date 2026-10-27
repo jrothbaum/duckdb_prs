@@ -108,6 +108,41 @@ COPY (SELECT * FROM survey) TO 'survey.dta' (
 
 Files are written to local paths. See [Writing files](docs/write.md) for column types, labels, what to expect, and size and speed. The SAS transport and SPSS portable formats have limits of their own (for example, `por` allows names of 8 characters and ASCII text only), described on that page.
 
+## Converting files to Parquet
+
+```sql
+COPY (SELECT * FROM read_prs('big.sas7bdat')) TO 'big.parquet' (FORMAT parquet);
+```
+
+The file is streamed: rows are decoded in batches and written as they arrive, so memory depends on how wide the table is, not on how many rows it has. By default rows can be written in any order, which is the fastest. To keep the order of the original file, add `preserve_order = true`.
+
+**Lowering memory.** Tables with many text columns use the most. Smaller Parquet row groups and fewer DuckDB threads lower it:
+
+```sql
+SET threads = 4;
+COPY (SELECT * FROM read_prs('big.sas7bdat'))
+TO 'big.parquet' (FORMAT parquet, ROW_GROUP_SIZE 10000);
+```
+
+To keep the file order and use the least memory, also decode on one thread:
+
+```sql
+COPY (SELECT * FROM read_prs('big.sas7bdat', preserve_order = true, threads = 1))
+TO 'big.parquet' (FORMAT parquet, ROW_GROUP_SIZE 10000);
+```
+
+Time and peak memory on one machine (peak memory is the highest resident memory of the process):
+
+| File | Settings | Time | Peak memory |
+|---|---|---|---|
+| Stata, 9,988,394 rows × 16 columns | default | 0.7 s | 0.9 GB |
+| | `ROW_GROUP_SIZE 10000` | 0.7 s | 0.6 GB |
+| | `preserve_order`, `threads = 1`, `ROW_GROUP_SIZE 10000` | 2.7 s | 0.5 GB |
+| SAS, 623,757 rows × 286 columns (185 text) | default | 6.8 s | 3.0 GB |
+| | `SET threads = 4`, `ROW_GROUP_SIZE 10000` | 1.8 s | 0.9 GB |
+| | `SET threads = 2`, `ROW_GROUP_SIZE 10000` | 2.9 s | 0.6 GB |
+| | `preserve_order`, `threads = 1`, `ROW_GROUP_SIZE 10000` | 8.4 s | 0.5 GB |
+
 ## Benchmarks
 
 Time to read whole files into a Polars DataFrame, in milliseconds, for `read_prs`, polars_readstat itself, and the `read_stat` DuckDB extension (which is built on the ReadStat library). The figure in brackets is each tool's time relative to `read_prs`.
