@@ -13,7 +13,7 @@ It reads files with the same Rust core as [polars_readstat](https://github.com/j
 ## Why use this?
 
 - **Query statistical files without converting them first.** Select, filter, join and aggregate SAS, Stata and SPSS files like any other DuckDB table, or load them into a table or Parquet with one statement.
-- **Fast.** Much faster than the community `read_stat` extension (about 17x faster overall in the [benchmarks](docs/benchmarks.md)), and only the columns your query uses are read, so a few columns out of hundreds is quick.
+- **Fast.** It uses polars_readstat's Rust engine, which is faster than ReadStat-based tools such as pyreadstat and the `read_stat` DuckDB extension (see polars_readstat's [benchmarks](https://github.com/jrothbaum/polars_readstat/blob/master/BENCHMARKS.md) and the [timings below](#benchmarks)). Only the columns your query uses are read, so a few columns out of hundreds is quick.
 - **Write as well as read.** `COPY ... TO` writes any query result to Stata or SPSS, or to a CSV plus SAS script that loads it. See [Writing files](docs/write.md).
 - **Works with DuckDB's file access.** Read from S3 the same way DuckDB's other readers do, using your DuckDB secrets and settings.
 - **Familiar options.** `preserve_order`, `row_index_name`, `value_labels_as_strings`, `missing_string_as_null`, `threads` and `batch_size` follow polars_readstat.
@@ -110,7 +110,7 @@ Files are written to local paths. See [Writing files](docs/write.md) for column 
 
 ## Benchmarks
 
-Time to read whole files into a Polars DataFrame, in milliseconds. `read_prs` is compared with polars_readstat and the community `read_stat` DuckDB extension; the figure in brackets is each tool's time relative to `read_prs` (so below 1x is faster than `read_prs`, above 1x is slower).
+Time to read whole files into a Polars DataFrame, in milliseconds, for `read_prs`, polars_readstat itself, and the `read_stat` DuckDB extension (which is built on the ReadStat library). The figure in brackets is each tool's time relative to `read_prs`.
 
 | File | Format | Rows | read_prs | polars_readstat | read_stat |
 |---|---|---|---|---|---|
@@ -123,7 +123,7 @@ Time to read whole files into a Polars DataFrame, in milliseconds. `read_prs` is
 | GSS2024 | SPSS | 3,309 | 118 ms | 88 ms (0.75x) | 676 ms (5.7x) |
 | **All files** | | | **2,735 ms** | **2,024 ms (0.74x)** | **47,936 ms (17.5x)** |
 
-These come from one machine with the files stored locally, so look at the relative sizes rather than the exact times. `read_stat` has no DuckDB 2.0 build yet, so it was run on DuckDB 1.5.2. See [Benchmarks](docs/benchmarks.md) for the cost of options such as `preserve_order` and of selecting only a few columns, and for how to run it yourself.
+These come from one machine with the files stored locally, so look at the relative sizes rather than the exact times. `read_stat` has no DuckDB 2.0 build yet, so it was run on DuckDB 1.5.2. The comparison of the engine itself with pyreadstat, another ReadStat-based tool, is in polars_readstat's [benchmarks](https://github.com/jrothbaum/polars_readstat/blob/master/BENCHMARKS.md). See [Benchmarks](docs/benchmarks.md) here for the cost of options such as `preserve_order` and of selecting only a few columns, and for how to run these timings yourself.
 
 ## Not supported
 

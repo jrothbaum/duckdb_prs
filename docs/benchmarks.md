@@ -3,7 +3,7 @@
 `read_prs` is compared with two alternatives that read the same files:
 
 - **polars_readstat**: the Python/Polars library built on the same Rust core.
-- **read_stat**: the community DuckDB extension for statistical files.
+- **read_stat**: the community DuckDB extension for statistical files, built on the ReadStat library.
 
 Everything is relative to `read_prs`, which is 1.00x. A number above 1.00x means that tool took longer than `read_prs` to do the same thing; below 1.00x means it was faster.
 
@@ -22,7 +22,8 @@ Each file is read completely (`SELECT *`) into a Polars DataFrame. Times are the
 | GSS2024 | SPSS | 3,309 | 1.00x (118 ms) | 0.75x | 5.7x |
 | **All files** | | | **1.00x (2735 ms)** | **0.74x** | **17.5x** |
 
-- `read_prs` is faster than `read_stat` on every file except the smallest one, where both take a few milliseconds.
+- `read_stat` and `read_prs` do the same job through DuckDB with different engines: ReadStat for `read_stat`, polars_readstat's Rust reader for `read_prs`. polars_readstat's own [benchmarks](https://github.com/jrothbaum/polars_readstat/blob/master/BENCHMARKS.md) compare that engine with pyreadstat, another ReadStat-based tool.
+- On the smallest file both take a few milliseconds, so the difference there is noise.
 - polars_readstat reads straight into a DataFrame, so it is usually faster than going through DuckDB. The gap is smallest on the wide SPSS files, where `read_prs` is on par or faster.
 
 ## Options and column selection

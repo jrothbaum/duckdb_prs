@@ -14,7 +14,7 @@ It reads files with the same Rust core as [polars_readstat](https://github.com/j
 
 - **Query statistical files without converting them first.** Select, filter, join and aggregate them like any other DuckDB table, or load them into a table or Parquet with one statement.
 - **Write as well as read.** `COPY ... TO` writes any query result to Stata or SPSS, or to a CSV plus a SAS script that loads it. See [Writing files](write.md).
-- **Fast.** Much faster than the community `read_stat` extension, and only the columns your query uses are read. See [Benchmarks](benchmarks.md).
+- **Fast.** It uses polars_readstat's Rust engine, which is faster than ReadStat-based tools such as pyreadstat and the `read_stat` DuckDB extension (see polars_readstat's [benchmarks](https://github.com/jrothbaum/polars_readstat/blob/master/BENCHMARKS.md)), and only the columns your query uses are read. See [Benchmarks](benchmarks.md) for timings.
 - **Works with DuckDB's file access.** Read from S3 using your DuckDB secrets and settings. See [Remote files](read.md#remote-files-s3).
 - **Familiar options.** `preserve_order`, `row_index_name`, `value_labels_as_strings` and the other options follow polars_readstat. See [Reading files](read.md).
 
