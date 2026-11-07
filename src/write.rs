@@ -71,28 +71,28 @@ fn check_column_type(kind: Kind, name: &str, id: LogicalTypeID, text: &str) -> R
     use LogicalTypeID as T;
     let supported = matches!(
         id,
-        T::DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_USMALLINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_UBIGINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_FLOAT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_HUGEINT
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_DATE
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIME
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS
-            | T::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ
+        T::Boolean
+            | T::TinyInt
+            | T::SmallInt
+            | T::Integer
+            | T::BigInt
+            | T::UTinyInt
+            | T::USmallInt
+            | T::UInteger
+            | T::UBigInt
+            | T::Float
+            | T::Double
+            | T::Decimal
+            | T::HugeInt
+            | T::Varchar
+            | T::Date
+            | T::Time
+            | T::TimeNs
+            | T::TimestampSec
+            | T::TimestampMs
+            | T::Timestamp
+            | T::TimestampNs
+            | T::TimestampTz
     );
     if supported {
         Ok(())
