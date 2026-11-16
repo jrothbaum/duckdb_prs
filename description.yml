@@ -24,9 +24,18 @@ repo:
 
 docs:
   hello_world: |
+    INSTALL read_prs FROM community;
+    LOAD read_prs;
+
     -- Write a small Stata file, then read it back
-    COPY (SELECT 1 AS id, 'Ada' AS name, DATE '1815-12-10' AS born) TO 'example.dta' (FORMAT dta);
-    SELECT * FROM read_prs('example.dta');
+    COPY (SELECT 1 AS id, 'Ada' AS name, DATE '1815-12-10' AS born)
+        TO 'read_prs_example.dta' (FORMAT dta);
+    SELECT * FROM read_prs('read_prs_example.dta');
+    -- id | name | born
+    -- 1  | Ada  | 1815-12-10
+
+    -- Only the columns a query uses are read from the file
+    SELECT name FROM read_prs('read_prs_example.dta') WHERE id = 1;
   extended_description: |
     `read_prs(path)` is a table function that reads SAS (`.sas7bdat`), Stata (`.dta`) and SPSS
     (`.sav`, `.zsav`) files, and the less common SAS transport (`.xpt`) and SPSS portable (`.por`)
