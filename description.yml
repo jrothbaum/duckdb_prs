@@ -1,18 +1,20 @@
-# Draft descriptor for DuckDB's community extensions repository
+# Descriptor for DuckDB's community extensions repository
 # (duckdb/community-extensions, extensions/read_prs/description.yml).
 #
-# Before submitting:
-#   - set repo.ref to the commit to build;
-#   - confirm with the community-extensions maintainers how a pure-Rust extension on DuckDB's
-#     v2 C API declares its build: `cmake` is the only value their documentation lists, and this
-#     extension builds with cargo through extension-ci-tools' `make configure` / `make release`.
+# Rust extension on DuckDB's v2 C API (USE_UNSTABLE_C_API=1), pinned to DuckDB 2.0.0, built through
+# extension-ci-tools' c_api_extensions/rust.Makefile (see ./Makefile), like the official rusty_quack
+# extension from duckdb/extension-template-rs.
+#
+# Before submitting: set repo.ref to the commit to build.
 extension:
   name: read_prs
   description: Read SAS, Stata and SPSS files directly in SQL, and write query results to Stata, SPSS and SAS files.
   version: 0.1.0
   language: Rust
-  build: cmake
+  build: cargo
   license: Apache-2.0
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;windows_amd64_rtools;linux_amd64_musl"
+  requires_toolchains: "rust;python3"
   maintainers:
     - jrothbaum
 
