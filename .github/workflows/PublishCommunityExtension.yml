@@ -1,0 +1,119 @@
+name: PublishCommunityExtension
+
+# Submits the latest GitHub release (or a chosen tag) to duckdb/community-extensions by opening, or
+# updating, a pull request. It copies description.yml from the release's commit with repo.ref set to
+# that commit. The same flow covers the first submission and every later update.
+#
+# Run it from the Actions tab, or:  gh workflow run PublishCommunityExtension.yml
+# (The Release workflow creates its release with the built-in token, and such a release cannot
+# trigger other workflows, so this one is started on its own.)
+#
+# One-time setup: add a repository secret COMMUNITY_EXTENSIONS_TOKEN, a token for the account that
+# should own the fork and the PR (a classic personal access token with the `public_repo` scope).
+# GITHUB_TOKEN cannot be used: it has no access to forks of other repositories.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (default: the latest release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM: duckdb/community-extensions
+  EXTENSION: read_prs
+
+jobs:
+  submit:
+    name: Open pull request to community-extensions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find the release to publish
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          tag="${TAG_INPUT}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          [ -n "$tag" ] || { echo "no release found"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Publishing release ${tag}"
+
+      - name: Check out the release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Read version and commit
+        id: info
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          version=$(sed -n 's/^  version: *\([^ #]*\).*/\1/p' description.yml | head -n1)
+          [ -n "$version" ] || { echo "no version in description.yml"; exit 1; }
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "release ${TAG} does not match description.yml version ${version}"; exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Write the descriptor for this commit
+        env:
+          SHA: ${{ steps.info.outputs.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          sed -E "s|^(  ref:).*|\1 ${SHA}|" description.yml > "$RUNNER_TEMP/out/description.yml"
+          grep -n '^  ref:' "$RUNNER_TEMP/out/description.yml"
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ secrets.COMMUNITY_EXTENSIONS_TOKEN }}
+          VERSION: ${{ steps.info.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SHA: ${{ steps.info.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN}" ] || { echo "secret COMMUNITY_EXTENSIONS_TOKEN is not set"; exit 1; }
+          me=$(gh api user --jq .login)
+          branch="${EXTENSION}-${VERSION}"
+
+          # Fork (a no-op if it already exists), then clone the fork and sync it with upstream.
+          gh repo fork "$UPSTREAM" --clone=false || true
+          fork="${me}/$(basename "$UPSTREAM")"
+          gh repo sync "$fork" --source "$UPSTREAM" --force || true
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${fork}.git" "$RUNNER_TEMP/fork"
+          cd "$RUNNER_TEMP/fork"
+          git config user.name "$me"
+          git config user.email "${me}@users.noreply.github.com"
+
+          if [ -f "extensions/${EXTENSION}/description.yml" ]; then
+            title="Update ${EXTENSION} extension to v${VERSION}"
+          else
+            title="Add ${EXTENSION} extension"
+          fi
+
+          git checkout -B "$branch"
+          mkdir -p "extensions/${EXTENSION}"
+          cp "$RUNNER_TEMP/out/description.yml" "extensions/${EXTENSION}/description.yml"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "descriptor already up to date upstream; nothing to submit"; exit 0
+          fi
+          git add "extensions/${EXTENSION}/description.yml"
+          git commit -m "$title"
+          git push --force origin "$branch"
+
+          body="Built from https://github.com/${GITHUB_REPOSITORY}/commit/${SHA} (release ${TAG}): https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          existing=$(gh pr list --repo "$UPSTREAM" --head "${me}:${branch}" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$UPSTREAM" --title "$title" --body "$body"
+            echo "updated PR #$existing"
+          else
+            gh pr create --repo "$UPSTREAM" --head "${me}:${branch}" --base main --title "$title" --body "$body"
+          fi
