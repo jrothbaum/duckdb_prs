@@ -1,15 +1,15 @@
 name: Release
 
-# Builds the extension on every platform and publishes a GitHub release with the binaries.
-# It does not touch duckdb/community-extensions; PublishCommunityExtension does that, separately.
+# Runs when you publish a release in the GitHub UI (or with `gh release create`): builds the extension
+# on every platform and attaches the binaries to that release. It does not touch
+# duckdb/community-extensions; PublishCommunityExtension does that, separately.
 #
-# Usage: bump `version` in description.yml, commit and push, then tag that commit:
-#   git tag v0.1.0 && git push origin v0.1.0
+# Usage: bump `version` in description.yml, commit and push, then create a release whose tag is
+# `v<version>` (for example v0.1.0) on that commit.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -28,20 +28,24 @@ jobs:
       reduced_ci_mode: 'disabled'
       allow_failure_archs: 'windows_arm64'
 
-  release:
-    name: Create GitHub release
+  attach:
+    name: Attach binaries to the release
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Check the tag matches the version in description.yml
         run: |
           version=$(sed -n 's/^  version: *\([^ #]*\).*/\1/p' description.yml | head -n1)
-          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match description.yml version ${version}"; exit 1
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "release tag ${TAG} does not match description.yml version ${version}"; exit 1
           fi
 
       - name: Download the built extensions
@@ -57,21 +61,11 @@ jobs:
             platform=$(basename "$dir" | sed 's/.*-extension-//')
             file=$(find "$dir" -name 'read_prs.duckdb_extension' | head -n1)
             [ -n "$file" ] || { echo "no extension file in $dir"; exit 1; }
-            gzip -c "$file" > "dist/read_prs-${GITHUB_REF_NAME}-${platform}.duckdb_extension.gz"
+            gzip -c "$file" > "dist/read_prs-${TAG}-${platform}.duckdb_extension.gz"
           done
           ls -l dist
 
-      # A release created by hand in the GitHub UI (or by an earlier run) may already exist for the
-      # tag; in that case keep it and just attach the binaries.
-      - name: Create the release, or attach the binaries to the existing one
+      - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" dist/* \
-              --title "${GITHUB_REF_NAME}" \
-              --generate-notes \
-              --notes "Built for DuckDB v2.0.0 (C_STRUCT_UNSTABLE; load only on that exact DuckDB version)."
-          fi
+        run: gh release upload "${TAG}" dist/* --clobber

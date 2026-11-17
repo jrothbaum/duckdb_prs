@@ -5,8 +5,8 @@ name: PublishCommunityExtension
 # that commit. The same flow covers the first submission and every later update.
 #
 # Run it from the Actions tab, or:  gh workflow run PublishCommunityExtension.yml
-# (The Release workflow creates its release with the built-in token, and such a release cannot
-# trigger other workflows, so this one is started on its own.)
+# Start it after the Release workflow (which runs when you publish a release) has finished and
+# attached the binaries; it is deliberately a separate step.
 #
 # One-time setup: add a repository secret COMMUNITY_EXTENSIONS_TOKEN, a token for the account that
 # should own the fork and the PR (a classic personal access token with the `public_repo` scope).
